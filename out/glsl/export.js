@@ -299,13 +299,19 @@ class GlslExport {
         return includes;
     }
     */
+    static sanitizeIncludeFragment(fragmentString) {
+        // Remove #version lines 
+        const versionLinesRegex = /^#version.*$/gm;
+        return fragmentString.replace(versionLinesRegex, '');
+    }
     static collectInlineIncludes(folder, fragmentString, filename = 'shaders/fragment.glsl', n = 0, includes = []) {
+        const sanitizedFragment = GlslExport.sanitizeIncludeFragment(fragmentString);
         const slices = [];
-        const regexp = /^\s*#include\s*['|"]((?!http:\/\/|https:\/\/).*.glsl)['|"]/gm;
+        const includeLineRegex = /^\s*#include\s*['|"]((?!http:\/\/|https:\/\/).*.glsl)['|"]/gm;
         let i = 0;
         let match;
-        while ((match = regexp.exec(fragmentString)) !== null) {
-            slices.push(fragmentString.slice(i, match.index));
+        while ((match = includeLineRegex.exec(sanitizedFragment)) !== null) {
+            slices.push(sanitizedFragment.slice(i, match.index));
             i = match.index + match[0].length;
             const fileName = match[1];
             const filePath = path.join(folder, fileName);
@@ -318,7 +324,7 @@ class GlslExport {
             includes = GlslExport.collectInlineIncludes(nextWorkpath, includeFragment, uniqueFilePath, n, includes);
             slices.push(`#include "${uniqueFileName}"`);
         }
-        slices.push(fragmentString.slice(i));
+        slices.push(sanitizedFragment.slice(i));
         const fragment = slices.join('');
         const include = { fragment, filename };
         includes.push(include);

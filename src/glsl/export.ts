@@ -349,14 +349,14 @@ export default class GlslExport {
 	}
 	*/
 
-	function sanitizeIncludeFragment(fragmentString) {
+	static sanitizeIncludeFragment(fragmentString: string): string {
 		// Remove #version lines 
 		const versionLinesRegex = /^#version.*$/gm;
 		return fragmentString.replace(versionLinesRegex, '');
 	}
 
 	static collectInlineIncludes(folder: string, fragmentString: string, filename: string = 'shaders/fragment.glsl', n:number = 0, includes: GlslExportInclude[] = []): GlslExportInclude[] {
-		const sanitizedFragment = sanitizeIncludeFragment(fragmentString);
+		const sanitizedFragment = GlslExport.sanitizeIncludeFragment(fragmentString);
 
 		const slices: string[] = [];
 		const includeLineRegex = /^\s*#include\s*['|"]((?!http:\/\/|https:\/\/).*.glsl)['|"]/gm;
