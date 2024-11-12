@@ -5,6 +5,20 @@ const vscode = require("vscode");
 const options_1 = require("./options");
 const DESERIALIZE_PANEL = true;
 class GlslPanel {
+    set onMessage(onMessage) {
+        this.onMessage_ = onMessage;
+        if (this.onMessageDisposable_) {
+            this.onMessageDisposable_.dispose();
+        }
+        this.onMessageDisposable_ = this.panel_.webview.onDidReceiveMessage(message => {
+            if (typeof onMessage === 'function') {
+                onMessage(message);
+            }
+        }, null, this.disposables_);
+    }
+    get onMessage() {
+        return this.onMessage_;
+    }
     constructor(panel, extensionPath, onMessage, state) {
         this.disposables_ = [];
         this.panel_ = panel;
@@ -24,20 +38,6 @@ class GlslPanel {
         this.render();
         // console.log('GlslPanel', panel, extensionPath, state);
     }
-    set onMessage(onMessage) {
-        this.onMessage_ = onMessage;
-        if (this.onMessageDisposable_) {
-            this.onMessageDisposable_.dispose();
-        }
-        this.onMessageDisposable_ = this.panel_.webview.onDidReceiveMessage(message => {
-            if (typeof onMessage === 'function') {
-                onMessage(message);
-            }
-        }, null, this.disposables_);
-    }
-    get onMessage() {
-        return this.onMessage_;
-    }
     static createOrShow(extensionPath, onMessage, subscriptions) {
         const viewColumn = vscode.window.activeTextEditor ? vscode.ViewColumn.Beside : vscode.ViewColumn.One;
         if (GlslPanel.current) {
@@ -56,7 +56,7 @@ class GlslPanel {
             preserveFocus: true,
         }, {
             enableScripts: true,
-            retainContextWhenHidden: true,
+            retainContextWhenHidden: true, // !!!
             localResourceRoots: localResourceRoots,
         });
         panel.onDidDispose(() => {
@@ -221,6 +221,6 @@ class GlslPanel {
         return text;
     }
 }
-exports.default = GlslPanel;
 GlslPanel.viewType = 'glslCanvas';
+exports.default = GlslPanel;
 //# sourceMappingURL=panel.js.map

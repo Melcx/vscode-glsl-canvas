@@ -393,6 +393,6 @@ class GlslExport {
         }
     }
 }
-exports.default = GlslExport;
 GlslExport.npm = false;
+exports.default = GlslExport;
 //# sourceMappingURL=export.js.map

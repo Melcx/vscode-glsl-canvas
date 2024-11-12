@@ -1,5 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.run = run;
 const glob = require("glob");
 const Mocha = require("mocha");
 const path = require("path");
@@ -8,7 +9,7 @@ function run() {
     const mocha = new Mocha({
         ui: 'tdd'
     });
-    mocha.useColors(true);
+    mocha.options.color = true;
     const testsRoot = path.resolve(__dirname, '..');
     return new Promise((c, e) => {
         glob('**/**.test.js', { cwd: testsRoot }, (err, files) => {
@@ -35,5 +36,4 @@ function run() {
         });
     });
 }
-exports.run = run;
 //# sourceMappingURL=index.js.map

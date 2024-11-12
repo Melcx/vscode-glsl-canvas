@@ -1,5 +1,6 @@
 'use strict';
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.DefaultFragment = void 0;
 const fs = require("fs");
 const path = require("path");
 const vscode = require("vscode");

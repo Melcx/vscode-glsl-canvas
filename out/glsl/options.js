@@ -1,12 +1,13 @@
 'use strict';
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.WORKPATH_SCHEME = void 0;
 const path = require("path");
 const vscode = require("vscode");
 const common_1 = require("./common");
 exports.WORKPATH_SCHEME = 'vscode-webview-resource:'; // 'vscode-webview-resource':
 class GlslOptions {
     constructor(webview = null, extensionPath = null) {
-        const document = common_1.currentGlslDocument();
+        const document = (0, common_1.currentGlslDocument)();
         const config = vscode.workspace.getConfiguration('glsl-canvas');
         const uri = document ? document.uri : null;
         const workspaceFolder = this.getWorkspaceFolder_();
