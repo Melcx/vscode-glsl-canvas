@@ -164,7 +164,7 @@
   "dependencies": {
     "ccapture.js": "1.1.0",
     "dat.gui": "0.7.9",
-    "glsl-canvas-js": "0.2.9",
+    "glsl-canvas-js": "git+https://github.com/Melcx/glsl-canvas.git#deep-npm-updates",
     "glslEditor": "0.0.24",
     "natives": "~1.1.6",
     "spawn-command-with-kill": "~1.0.2",
