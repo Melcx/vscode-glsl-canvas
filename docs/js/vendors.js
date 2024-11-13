@@ -14028,808 +14028,1540 @@ _dereq_('./es6.array.iterator');
 var Iterators = _dereq_('./$.iterators');
 Iterators.NodeList = Iterators.HTMLCollection = Iterators.Array;
 },{"./$.iterators":70,"./es6.array.iterator":96}],107:[function(_dereq_,module,exports){
-;(function(root) {
-  /**
-   * Constructs a new cross storage client given the url to a hub. By default,
-   * an iframe is created within the document body that points to the url. It
-   * also accepts an options object, which may include a timeout, frameId, and
-   * promise. The timeout, in milliseconds, is applied to each request and
-   * defaults to 5000ms. The options object may also include a frameId,
-   * identifying an existing frame on which to install its listeners. If the
-   * promise key is supplied the constructor for a Promise, that Promise library
-   * will be used instead of the default window.Promise.
-   *
-   * @example
-   * var storage = new CrossStorageClient('https://store.example.com/hub.html');
-   *
-   * @example
-   * var storage = new CrossStorageClient('https://store.example.com/hub.html', {
-   *   timeout: 5000,
-   *   frameId: 'storageFrame'
-   * });
-   *
-   * @constructor
-   *
-   * @param {string} url    The url to a cross storage hub
-   * @param {object} [opts] An optional object containing additional options,
-   *                        including timeout, frameId, and promise
-   *
-   * @property {string}   _id        A UUID v4 id
-   * @property {function} _promise   The Promise object to use
-   * @property {string}   _frameId   The id of the iFrame pointing to the hub url
-   * @property {string}   _origin    The hub's origin
-   * @property {object}   _requests  Mapping of request ids to callbacks
-   * @property {bool}     _connected Whether or not it has connected
-   * @property {bool}     _closed    Whether or not the client has closed
-   * @property {int}      _count     Number of requests sent
-   * @property {function} _listener  The listener added to the window
-   * @property {Window}   _hub       The hub window
-   */
-  function CrossStorageClient(url, opts) {
-    opts = opts || {};
+(function (global){
+/*!
+ISC License
 
-    this._id        = CrossStorageClient._generateUUID();
-    this._promise   = opts.promise || Promise;
-    this._frameId   = opts.frameId || 'CrossStorageClient-' + this._id;
-    this._origin    = CrossStorageClient._getOrigin(url);
-    this._requests  = {};
-    this._connected = false;
-    this._closed    = false;
-    this._count     = 0;
-    this._timeout   = opts.timeout || 5000;
-    this._listener  = null;
+Copyright (c) 2014-2018, Andrea Giammarchi, @WebReflection
 
-    this._installListener();
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
 
-    var frame;
-    if (opts.frameId) {
-      frame = document.getElementById(opts.frameId);
-    }
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
+REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
+AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
+LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE
+OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+PERFORMANCE OF THIS SOFTWARE.
 
-    // If using a passed iframe, poll the hub for a ready message
-    if (frame) {
-      this._poll();
-    }
+*/
+// global window Object
+// optional polyfill info
+//    'auto' used by default, everything is feature detected
+//    'force' use the polyfill even if not fully needed
+function installCustomElements(window, polyfill) {'use strict';
 
-    // Create the frame if not found or specified
-    frame = frame || this._createFrame(url);
-    this._hub = frame.contentWindow;
-  }
+  // DO NOT USE THIS FILE DIRECTLY, IT WON'T WORK
+  // THIS IS A PROJECT BASED ON A BUILD SYSTEM
+  // THIS FILE IS JUST WRAPPED UP RESULTING IN
+  // build/document-register-element.node.js
 
-  /**
-   * The styles to be applied to the generated iFrame. Defines a set of properties
-   * that hide the element by positioning it outside of the visible area, and
-   * by modifying its display.
-   *
-   * @member {Object}
-   */
-  CrossStorageClient.frameStyle = {
-    display:  'none',
-    position: 'absolute',
-    top:      '-999px',
-    left:     '-999px'
-  };
+  var
+    document = window.document,
+    Object = window.Object
+  ;
 
-  /**
-   * Returns the origin of an url, with cross browser support. Accommodates
-   * the lack of location.origin in IE, as well as the discrepancies in the
-   * inclusion of the port when using the default port for a protocol, e.g.
-   * 443 over https. Defaults to the origin of window.location if passed a
-   * relative path.
-   *
-   * @param   {string} url The url to a cross storage hub
-   * @returns {string} The origin of the url
-   */
-  CrossStorageClient._getOrigin = function(url) {
-    var uri, protocol, origin;
-
-    uri = document.createElement('a');
-    uri.href = url;
-
-    if (!uri.host) {
-      uri = window.location;
-    }
-
-    if (!uri.protocol || uri.protocol === ':') {
-      protocol = window.location.protocol;
-    } else {
-      protocol = uri.protocol;
-    }
-
-    origin = protocol + '//' + uri.host;
-    origin = origin.replace(/:80$|:443$/, '');
-
-    return origin;
-  };
-
-  /**
-   * UUID v4 generation, taken from: http://stackoverflow.com/questions/
-   * 105034/how-to-create-a-guid-uuid-in-javascript/2117523#2117523
-   *
-   * @returns {string} A UUID v4 string
-   */
-  CrossStorageClient._generateUUID = function() {
-    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-      var r = Math.random() * 16|0, v = c == 'x' ? r : (r&0x3|0x8);
-
-      return v.toString(16);
-    });
-  };
-
-  /**
-   * Returns a promise that is fulfilled when a connection has been established
-   * with the cross storage hub. Its use is required to avoid sending any
-   * requests prior to initialization being complete.
-   *
-   * @returns {Promise} A promise that is resolved on connect
-   */
-  CrossStorageClient.prototype.onConnect = function() {
-    var client = this;
-
-    if (this._connected) {
-      return this._promise.resolve();
-    } else if (this._closed) {
-      return this._promise.reject(new Error('CrossStorageClient has closed'));
-    }
-
-    // Queue connect requests for client re-use
-    if (!this._requests.connect) {
-      this._requests.connect = [];
-    }
-
-    return new this._promise(function(resolve, reject) {
-      var timeout = setTimeout(function() {
-        reject(new Error('CrossStorageClient could not connect'));
-      }, client._timeout);
-
-      client._requests.connect.push(function(err) {
-        clearTimeout(timeout);
-        if (err) return reject(err);
-
-        resolve();
-      });
-    });
-  };
-
-  /**
-   * Sets a key to the specified value. Returns a promise that is fulfilled on
-   * success, or rejected if any errors setting the key occurred, or the request
-   * timed out.
-   *
-   * @param   {string}  key   The key to set
-   * @param   {*}       value The value to assign
-   * @returns {Promise} A promise that is settled on hub response or timeout
-   */
-  CrossStorageClient.prototype.set = function(key, value) {
-    return this._request('set', {
-      key:   key,
-      value: value
-    });
-  };
-
-  /**
-   * Accepts one or more keys for which to retrieve their values. Returns a
-   * promise that is settled on hub response or timeout. On success, it is
-   * fulfilled with the value of the key if only passed a single argument.
-   * Otherwise it's resolved with an array of values. On failure, it is rejected
-   * with the corresponding error message.
-   *
-   * @param   {...string} key The key to retrieve
-   * @returns {Promise}   A promise that is settled on hub response or timeout
-   */
-  CrossStorageClient.prototype.get = function(key) {
-    var args = Array.prototype.slice.call(arguments);
-
-    return this._request('get', {keys: args});
-  };
-
-  /**
-   * Accepts one or more keys for deletion. Returns a promise that is settled on
-   * hub response or timeout.
-   *
-   * @param   {...string} key The key to delete
-   * @returns {Promise}   A promise that is settled on hub response or timeout
-   */
-  CrossStorageClient.prototype.del = function() {
-    var args = Array.prototype.slice.call(arguments);
-
-    return this._request('del', {keys: args});
-  };
-
-  /**
-   * Returns a promise that, when resolved, indicates that all localStorage
-   * data has been cleared.
-   *
-   * @returns {Promise} A promise that is settled on hub response or timeout
-   */
-  CrossStorageClient.prototype.clear = function() {
-    return this._request('clear');
-  };
-
-  /**
-   * Returns a promise that, when resolved, passes an array of all keys
-   * currently in storage.
-   *
-   * @returns {Promise} A promise that is settled on hub response or timeout
-   */
-  CrossStorageClient.prototype.getKeys = function() {
-    return this._request('getKeys');
-  };
-
-  /**
-   * Deletes the iframe and sets the connected state to false. The client can
-   * no longer be used after being invoked.
-   */
-  CrossStorageClient.prototype.close = function() {
-    var frame = document.getElementById(this._frameId);
-    if (frame) {
-      frame.parentNode.removeChild(frame);
-    }
-
-    // Support IE8 with detachEvent
-    if (window.removeEventListener) {
-      window.removeEventListener('message', this._listener, false);
-    } else {
-      window.detachEvent('onmessage', this._listener);
-    }
-
-    this._connected = false;
-    this._closed = true;
-  };
-
-  /**
-   * Installs the necessary listener for the window message event. When a message
-   * is received, the client's _connected status is changed to true, and the
-   * onConnect promise is fulfilled. Given a response message, the callback
-   * corresponding to its request is invoked. If response.error holds a truthy
-   * value, the promise associated with the original request is rejected with
-   * the error. Otherwise the promise is fulfilled and passed response.result.
-   *
-   * @private
-   */
-  CrossStorageClient.prototype._installListener = function() {
-    var client = this;
-
-    this._listener = function(message) {
-      var i, origin, error, response;
-
-      // Ignore invalid messages or those after the client has closed
-      if (client._closed || !message.data || typeof message.data !== 'string') {
-        return;
-      }
-
-      // postMessage returns the string "null" as the origin for "file://"
-      origin = (message.origin === 'null') ? 'file://' : message.origin;
-
-      // Ignore messages not from the correct origin
-      if (origin !== client._origin) return;
-
-      // LocalStorage isn't available in the hub
-      if (message.data === 'cross-storage:unavailable') {
-        if (!client._closed) client.close();
-        if (!client._requests.connect) return;
-
-        error = new Error('Closing client. Could not access localStorage in hub.');
-        for (i = 0; i < client._requests.connect.length; i++) {
-          client._requests.connect[i](error);
+  var htmlClass = (function (info) {
+    // (C) Andrea Giammarchi - @WebReflection - MIT Style
+    var
+      catchClass = /^[A-Z]+[a-z]/,
+      filterBy = function (re) {
+        var arr = [], tag;
+        for (tag in register) {
+          if (re.test(tag)) arr.push(tag);
         }
-
-        return;
-      }
-
-      // Handle initial connection
-      if (message.data.indexOf('cross-storage:') !== -1 && !client._connected) {
-        client._connected = true;
-        if (!client._requests.connect) return;
-
-        for (i = 0; i < client._requests.connect.length; i++) {
-          client._requests.connect[i](error);
+        return arr;
+      },
+      add = function (Class, tag) {
+        tag = tag.toLowerCase();
+        if (!(tag in register)) {
+          register[Class] = (register[Class] || []).concat(tag);
+          register[tag] = (register[tag.toUpperCase()] = Class);
         }
-        delete client._requests.connect;
+      },
+      register = (Object.create || Object)(null),
+      htmlClass = {},
+      i, section, tags, Class
+    ;
+    for (section in info) {
+      for (Class in info[section]) {
+        tags = info[section][Class];
+        register[Class] = tags;
+        for (i = 0; i < tags.length; i++) {
+          register[tags[i].toLowerCase()] =
+          register[tags[i].toUpperCase()] = Class;
+        }
       }
-
-      if (message.data === 'cross-storage:ready') return;
-
-      // All other messages
-      try {
-        response = JSON.parse(message.data);
-      } catch(e) {
-        return;
-      }
-
-      if (!response.id) return;
-
-      if (client._requests[response.id]) {
-        client._requests[response.id](response.error, response.result);
-      }
+    }
+    htmlClass.get = function get(tagOrClass) {
+      return typeof tagOrClass === 'string' ?
+        (register[tagOrClass] || (catchClass.test(tagOrClass) ? [] : '')) :
+        filterBy(tagOrClass);
     };
-
-    // Support IE8 with attachEvent
-    if (window.addEventListener) {
-      window.addEventListener('message', this._listener, false);
-    } else {
-      window.attachEvent('onmessage', this._listener);
-    }
-  };
-
-  /**
-   * Invoked when a frame id was passed to the client, rather than allowing
-   * the client to create its own iframe. Polls the hub for a ready event to
-   * establish a connected state.
-   */
-  CrossStorageClient.prototype._poll = function() {
-    var client, interval, targetOrigin;
-
-    client = this;
-
-    // postMessage requires that the target origin be set to "*" for "file://"
-    targetOrigin = (client._origin === 'file://') ? '*' : client._origin;
-
-    interval = setInterval(function() {
-      if (client._connected) return clearInterval(interval);
-      if (!client._hub) return;
-
-      client._hub.postMessage('cross-storage:poll', targetOrigin);
-    }, 1000);
-  };
-
-  /**
-   * Creates a new iFrame containing the hub. Applies the necessary styles to
-   * hide the element from view, prior to adding it to the document body.
-   * Returns the created element.
-   *
-   * @private
-   *
-   * @param  {string}            url The url to the hub
-   * returns {HTMLIFrameElement} The iFrame element itself
-   */
-  CrossStorageClient.prototype._createFrame = function(url) {
-    var frame, key;
-
-    frame = window.document.createElement('iframe');
-    frame.id = this._frameId;
-
-    // Style the iframe
-    for (key in CrossStorageClient.frameStyle) {
-      if (CrossStorageClient.frameStyle.hasOwnProperty(key)) {
-        frame.style[key] = CrossStorageClient.frameStyle[key];
-      }
-    }
-
-    window.document.body.appendChild(frame);
-    frame.src = url;
-
-    return frame;
-  };
-
-  /**
-   * Sends a message containing the given method and params to the hub. Stores
-   * a callback in the _requests object for later invocation on message, or
-   * deletion on timeout. Returns a promise that is settled in either instance.
-   *
-   * @private
-   *
-   * @param   {string}  method The method to invoke
-   * @param   {*}       params The arguments to pass
-   * @returns {Promise} A promise that is settled on hub response or timeout
-   */
-  CrossStorageClient.prototype._request = function(method, params) {
-    var req, client;
-
-    if (this._closed) {
-      return this._promise.reject(new Error('CrossStorageClient has closed'));
-    }
-
-    client = this;
-    client._count++;
-
-    req = {
-      id:     this._id + ':' + client._count,
-      method: 'cross-storage:' + method,
-      params: params
+    htmlClass.set = function set(tag, Class) {
+      return (catchClass.test(tag) ?
+        add(tag, Class) :
+        add(Class, tag)
+      ), htmlClass;
     };
-
-    return new this._promise(function(resolve, reject) {
-      var timeout, originalToJSON, targetOrigin;
-
-      // Timeout if a response isn't received after 4s
-      timeout = setTimeout(function() {
-        if (!client._requests[req.id]) return;
-
-        delete client._requests[req.id];
-        reject(new Error('Timeout: could not perform ' + req.method));
-      }, client._timeout);
-
-      // Add request callback
-      client._requests[req.id] = function(err, result) {
-        clearTimeout(timeout);
-        delete client._requests[req.id];
-        if (err) return reject(new Error(err));
-        resolve(result);
+    return htmlClass;
+  }({
+    "collections": {
+      "HTMLAllCollection": [
+        "all"
+      ],
+      "HTMLCollection": [
+        "forms"
+      ],
+      "HTMLFormControlsCollection": [
+        "elements"
+      ],
+      "HTMLOptionsCollection": [
+        "options"
+      ]
+    },
+    "elements": {
+      "Element": [
+        "element"
+      ],
+      "HTMLAnchorElement": [
+        "a"
+      ],
+      "HTMLAppletElement": [
+        "applet"
+      ],
+      "HTMLAreaElement": [
+        "area"
+      ],
+      "HTMLAttachmentElement": [
+        "attachment"
+      ],
+      "HTMLAudioElement": [
+        "audio"
+      ],
+      "HTMLBRElement": [
+        "br"
+      ],
+      "HTMLBaseElement": [
+        "base"
+      ],
+      "HTMLBodyElement": [
+        "body"
+      ],
+      "HTMLButtonElement": [
+        "button"
+      ],
+      "HTMLCanvasElement": [
+        "canvas"
+      ],
+      "HTMLContentElement": [
+        "content"
+      ],
+      "HTMLDListElement": [
+        "dl"
+      ],
+      "HTMLDataElement": [
+        "data"
+      ],
+      "HTMLDataListElement": [
+        "datalist"
+      ],
+      "HTMLDetailsElement": [
+        "details"
+      ],
+      "HTMLDialogElement": [
+        "dialog"
+      ],
+      "HTMLDirectoryElement": [
+        "dir"
+      ],
+      "HTMLDivElement": [
+        "div"
+      ],
+      "HTMLDocument": [
+        "document"
+      ],
+      "HTMLElement": [
+        "element",
+        "abbr",
+        "address",
+        "article",
+        "aside",
+        "b",
+        "bdi",
+        "bdo",
+        "cite",
+        "code",
+        "command",
+        "dd",
+        "dfn",
+        "dt",
+        "em",
+        "figcaption",
+        "figure",
+        "footer",
+        "header",
+        "i",
+        "kbd",
+        "mark",
+        "nav",
+        "noscript",
+        "rp",
+        "rt",
+        "ruby",
+        "s",
+        "samp",
+        "section",
+        "small",
+        "strong",
+        "sub",
+        "summary",
+        "sup",
+        "u",
+        "var",
+        "wbr"
+      ],
+      "HTMLEmbedElement": [
+        "embed"
+      ],
+      "HTMLFieldSetElement": [
+        "fieldset"
+      ],
+      "HTMLFontElement": [
+        "font"
+      ],
+      "HTMLFormElement": [
+        "form"
+      ],
+      "HTMLFrameElement": [
+        "frame"
+      ],
+      "HTMLFrameSetElement": [
+        "frameset"
+      ],
+      "HTMLHRElement": [
+        "hr"
+      ],
+      "HTMLHeadElement": [
+        "head"
+      ],
+      "HTMLHeadingElement": [
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6"
+      ],
+      "HTMLHtmlElement": [
+        "html"
+      ],
+      "HTMLIFrameElement": [
+        "iframe"
+      ],
+      "HTMLImageElement": [
+        "img"
+      ],
+      "HTMLInputElement": [
+        "input"
+      ],
+      "HTMLKeygenElement": [
+        "keygen"
+      ],
+      "HTMLLIElement": [
+        "li"
+      ],
+      "HTMLLabelElement": [
+        "label"
+      ],
+      "HTMLLegendElement": [
+        "legend"
+      ],
+      "HTMLLinkElement": [
+        "link"
+      ],
+      "HTMLMapElement": [
+        "map"
+      ],
+      "HTMLMarqueeElement": [
+        "marquee"
+      ],
+      "HTMLMediaElement": [
+        "media"
+      ],
+      "HTMLMenuElement": [
+        "menu"
+      ],
+      "HTMLMenuItemElement": [
+        "menuitem"
+      ],
+      "HTMLMetaElement": [
+        "meta"
+      ],
+      "HTMLMeterElement": [
+        "meter"
+      ],
+      "HTMLModElement": [
+        "del",
+        "ins"
+      ],
+      "HTMLOListElement": [
+        "ol"
+      ],
+      "HTMLObjectElement": [
+        "object"
+      ],
+      "HTMLOptGroupElement": [
+        "optgroup"
+      ],
+      "HTMLOptionElement": [
+        "option"
+      ],
+      "HTMLOutputElement": [
+        "output"
+      ],
+      "HTMLParagraphElement": [
+        "p"
+      ],
+      "HTMLParamElement": [
+        "param"
+      ],
+      "HTMLPictureElement": [
+        "picture"
+      ],
+      "HTMLPreElement": [
+        "pre"
+      ],
+      "HTMLProgressElement": [
+        "progress"
+      ],
+      "HTMLQuoteElement": [
+        "blockquote",
+        "q",
+        "quote"
+      ],
+      "HTMLScriptElement": [
+        "script"
+      ],
+      "HTMLSelectElement": [
+        "select"
+      ],
+      "HTMLShadowElement": [
+        "shadow"
+      ],
+      "HTMLSlotElement": [
+        "slot"
+      ],
+      "HTMLSourceElement": [
+        "source"
+      ],
+      "HTMLSpanElement": [
+        "span"
+      ],
+      "HTMLStyleElement": [
+        "style"
+      ],
+      "HTMLTableCaptionElement": [
+        "caption"
+      ],
+      "HTMLTableCellElement": [
+        "td",
+        "th"
+      ],
+      "HTMLTableColElement": [
+        "col",
+        "colgroup"
+      ],
+      "HTMLTableElement": [
+        "table"
+      ],
+      "HTMLTableRowElement": [
+        "tr"
+      ],
+      "HTMLTableSectionElement": [
+        "thead",
+        "tbody",
+        "tfoot"
+      ],
+      "HTMLTemplateElement": [
+        "template"
+      ],
+      "HTMLTextAreaElement": [
+        "textarea"
+      ],
+      "HTMLTimeElement": [
+        "time"
+      ],
+      "HTMLTitleElement": [
+        "title"
+      ],
+      "HTMLTrackElement": [
+        "track"
+      ],
+      "HTMLUListElement": [
+        "ul"
+      ],
+      "HTMLUnknownElement": [
+        "unknown",
+        "vhgroupv",
+        "vkeygen"
+      ],
+      "HTMLVideoElement": [
+        "video"
+      ]
+    },
+    "nodes": {
+      "Attr": [
+        "node"
+      ],
+      "Audio": [
+        "audio"
+      ],
+      "CDATASection": [
+        "node"
+      ],
+      "CharacterData": [
+        "node"
+      ],
+      "Comment": [
+        "#comment"
+      ],
+      "Document": [
+        "#document"
+      ],
+      "DocumentFragment": [
+        "#document-fragment"
+      ],
+      "DocumentType": [
+        "node"
+      ],
+      "HTMLDocument": [
+        "#document"
+      ],
+      "Image": [
+        "img"
+      ],
+      "Option": [
+        "option"
+      ],
+      "ProcessingInstruction": [
+        "node"
+      ],
+      "ShadowRoot": [
+        "#shadow-root"
+      ],
+      "Text": [
+        "#text"
+      ],
+      "XMLDocument": [
+        "xml"
+      ]
+    }
+  }));
+  
+  
+    
+  // passed at runtime, configurable via nodejs module
+  if (typeof polyfill !== 'object') polyfill = {type: polyfill || 'auto'};
+  
+  var
+    // V0 polyfill entry
+    REGISTER_ELEMENT = 'registerElement',
+  
+    // pseudo-random number used as expando/unique name on feature detection
+    UID = window.Math.random() * 10e4 >> 0,
+  
+    // IE < 11 only + old WebKit for attributes + feature detection
+    EXPANDO_UID = '__' + REGISTER_ELEMENT + UID,
+  
+    // shortcuts and costants
+    ADD_EVENT_LISTENER = 'addEventListener',
+    ATTACHED = 'attached',
+    CALLBACK = 'Callback',
+    DETACHED = 'detached',
+    EXTENDS = 'extends',
+  
+    ATTRIBUTE_CHANGED_CALLBACK = 'attributeChanged' + CALLBACK,
+    ATTACHED_CALLBACK = ATTACHED + CALLBACK,
+    CONNECTED_CALLBACK = 'connected' + CALLBACK,
+    DISCONNECTED_CALLBACK = 'disconnected' + CALLBACK,
+    CREATED_CALLBACK = 'created' + CALLBACK,
+    DETACHED_CALLBACK = DETACHED + CALLBACK,
+  
+    ADDITION = 'ADDITION',
+    MODIFICATION = 'MODIFICATION',
+    REMOVAL = 'REMOVAL',
+  
+    DOM_ATTR_MODIFIED = 'DOMAttrModified',
+    DOM_CONTENT_LOADED = 'DOMContentLoaded',
+    DOM_SUBTREE_MODIFIED = 'DOMSubtreeModified',
+  
+    PREFIX_TAG = '<',
+    PREFIX_IS = '=',
+  
+    // valid and invalid node names
+    validName = /^[A-Z][._A-Z0-9]*-[-._A-Z0-9]*$/,
+    invalidNames = [
+      'ANNOTATION-XML',
+      'COLOR-PROFILE',
+      'FONT-FACE',
+      'FONT-FACE-SRC',
+      'FONT-FACE-URI',
+      'FONT-FACE-FORMAT',
+      'FONT-FACE-NAME',
+      'MISSING-GLYPH'
+    ],
+  
+    // registered types and their prototypes
+    types = [],
+    protos = [],
+  
+    // to query subnodes
+    query = '',
+  
+    // html shortcut used to feature detect
+    documentElement = document.documentElement,
+  
+    // ES5 inline helpers || basic patches
+    indexOf = types.indexOf || function (v) {
+      for(var i = this.length; i-- && this[i] !== v;){}
+      return i;
+    },
+  
+    // other helpers / shortcuts
+    OP = Object.prototype,
+    hOP = OP.hasOwnProperty,
+    iPO = OP.isPrototypeOf,
+  
+    defineProperty = Object.defineProperty,
+    empty = [],
+    gOPD = Object.getOwnPropertyDescriptor,
+    gOPN = Object.getOwnPropertyNames,
+    gPO = Object.getPrototypeOf,
+    sPO = Object.setPrototypeOf,
+  
+    // jshint proto: true
+    hasProto = !!Object.__proto__,
+  
+    // V1 helpers
+    fixGetClass = false,
+    DRECEV1 = '__dreCEv1',
+    customElements = window.customElements,
+    usableCustomElements = !/^force/.test(polyfill.type) && !!(
+      customElements &&
+      customElements.define &&
+      customElements.get &&
+      customElements.whenDefined
+    ),
+    Dict = Object.create || Object,
+    Map = window.Map || function Map() {
+      var K = [], V = [], i;
+      return {
+        get: function (k) {
+          return V[indexOf.call(K, k)];
+        },
+        set: function (k, v) {
+          i = indexOf.call(K, k);
+          if (i < 0) V[K.push(k) - 1] = v;
+          else V[i] = v;
+        }
       };
-
-      // In case we have a broken Array.prototype.toJSON, e.g. because of
-      // old versions of prototype
-      if (Array.prototype.toJSON) {
-        originalToJSON = Array.prototype.toJSON;
-        Array.prototype.toJSON = null;
+    },
+    Promise = window.Promise || function (fn) {
+      var
+        notify = [],
+        done = false,
+        p = {
+          'catch': function () {
+            return p;
+          },
+          'then': function (cb) {
+            notify.push(cb);
+            if (done) setTimeout(resolve, 1);
+            return p;
+          }
+        }
+      ;
+      function resolve(value) {
+        done = true;
+        while (notify.length) notify.shift()(value);
       }
-
-      // postMessage requires that the target origin be set to "*" for "file://"
-      targetOrigin = (client._origin === 'file://') ? '*' : client._origin;
-
-      // Send serialized message
-      client._hub.postMessage(JSON.stringify(req), targetOrigin);
-
-      // Restore original toJSON
-      if (originalToJSON) {
-        Array.prototype.toJSON = originalToJSON;
+      fn(resolve);
+      return p;
+    },
+    justCreated = false,
+    constructors = Dict(null),
+    waitingList = Dict(null),
+    nodeNames = new Map(),
+    secondArgument = function (is) {
+      return is.toLowerCase();
+    },
+  
+    // used to create unique instances
+    create = Object.create || function Bridge(proto) {
+      // silly broken polyfill probably ever used but short enough to work
+      return proto ? ((Bridge.prototype = proto), new Bridge()) : this;
+    },
+  
+    // will set the prototype if possible
+    // or copy over all properties
+    setPrototype = sPO || (
+      hasProto ?
+        function (o, p) {
+          o.__proto__ = p;
+          return o;
+        } : (
+      (gOPN && gOPD) ?
+        (function(){
+          function setProperties(o, p) {
+            for (var
+              key,
+              names = gOPN(p),
+              i = 0, length = names.length;
+              i < length; i++
+            ) {
+              key = names[i];
+              if (!hOP.call(o, key)) {
+                defineProperty(o, key, gOPD(p, key));
+              }
+            }
+          }
+          return function (o, p) {
+            do {
+              setProperties(o, p);
+            } while ((p = gPO(p)) && !iPO.call(p, o));
+            return o;
+          };
+        }()) :
+        function (o, p) {
+          for (var key in p) {
+            o[key] = p[key];
+          }
+          return o;
+        }
+    )),
+  
+    // DOM shortcuts and helpers, if any
+  
+    MutationObserver = window.MutationObserver ||
+                       window.WebKitMutationObserver,
+  
+    HTMLAnchorElement = window.HTMLAnchorElement,
+  
+    HTMLElementPrototype = (
+      window.HTMLElement ||
+      window.Element ||
+      window.Node
+    ).prototype,
+  
+    IE8 = !iPO.call(HTMLElementPrototype, documentElement),
+  
+    safeProperty = IE8 ? function (o, k, d) {
+      o[k] = d.value;
+      return o;
+    } : defineProperty,
+  
+    isValidNode = IE8 ?
+      function (node) {
+        return node.nodeType === 1;
+      } :
+      function (node) {
+        return iPO.call(HTMLElementPrototype, node);
+      },
+  
+    targets = IE8 && [],
+  
+    attachShadow = HTMLElementPrototype.attachShadow,
+    cloneNode = HTMLElementPrototype.cloneNode,
+    closest = HTMLElementPrototype.closest || function (name) {
+      var self = this;
+      while (self && self.nodeName !== name)
+        self = self.parentNode;
+      return self;
+    },
+    dispatchEvent = HTMLElementPrototype.dispatchEvent,
+    getAttribute = HTMLElementPrototype.getAttribute,
+    hasAttribute = HTMLElementPrototype.hasAttribute,
+    removeAttribute = HTMLElementPrototype.removeAttribute,
+    setAttribute = HTMLElementPrototype.setAttribute,
+  
+    // replaced later on
+    createElement = document.createElement,
+    importNode = document.importNode,
+    patchedCreateElement = createElement,
+  
+    // shared observer for all attributes
+    attributesObserver = MutationObserver && {
+      attributes: true,
+      characterData: true,
+      attributeOldValue: true
+    },
+  
+    // useful to detect only if there's no MutationObserver
+    DOMAttrModified = MutationObserver || function(e) {
+      doesNotSupportDOMAttrModified = false;
+      documentElement.removeEventListener(
+        DOM_ATTR_MODIFIED,
+        DOMAttrModified
+      );
+    },
+  
+    // will both be used to make DOMNodeInserted asynchronous
+    asapQueue,
+    asapTimer = 0,
+  
+    // internal flags
+    V0 = REGISTER_ELEMENT in document &&
+         !/^force-all/.test(polyfill.type),
+    setListener = true,
+    justSetup = false,
+    doesNotSupportDOMAttrModified = true,
+    dropDomContentLoaded = true,
+  
+    // needed for the innerHTML helper
+    notFromInnerHTMLHelper = true,
+  
+    // optionally defined later on
+    onSubtreeModified,
+    callDOMAttrModified,
+    getAttributesMirror,
+    observer,
+    observe,
+  
+    // based on setting prototype capability
+    // will check proto or the expando attribute
+    // in order to setup the node once
+    patchIfNotAlready,
+    patch,
+  
+    // used for tests
+    tmp
+  ;
+  
+  // IE11 disconnectedCallback issue #
+  // to be tested before any createElement patch
+  if (MutationObserver) {
+    // original fix:
+    // https://github.com/javan/mutation-observer-inner-html-shim
+    tmp = document.createElement('div');
+    tmp.innerHTML = '<div><div></div></div>';
+    new MutationObserver(function (mutations, observer) {
+      if (
+        mutations[0] &&
+        mutations[0].type == 'childList' &&
+        !mutations[0].removedNodes[0].childNodes.length
+      ) {
+        tmp = gOPD(HTMLElementPrototype, 'innerHTML');
+        var set = tmp && tmp.set;
+        if (set)
+          defineProperty(HTMLElementPrototype, 'innerHTML', {
+            set: function (value) {
+              while (this.lastChild)
+                this.removeChild(this.lastChild);
+              set.call(this, value);
+            }
+          });
       }
-    });
-  };
-
-  /**
-   * Export for various environments.
-   */
-  if (typeof module !== 'undefined' && module.exports) {
-    module.exports = CrossStorageClient;
-  } else if (typeof exports !== 'undefined') {
-    exports.CrossStorageClient = CrossStorageClient;
-  } else if (typeof define === 'function' && define.amd) {
-    define([], function() {
-      return CrossStorageClient;
-    });
-  } else {
-    root.CrossStorageClient = CrossStorageClient;
+      observer.disconnect();
+      tmp = null;
+    }).observe(tmp, {childList: true, subtree: true});
+    tmp.innerHTML = "";
   }
-}(this));
+  
+  // only if needed
+  if (!V0) {
+  
+    if (sPO || hasProto) {
+        patchIfNotAlready = function (node, proto) {
+          if (!iPO.call(proto, node)) {
+            setupNode(node, proto);
+          }
+        };
+        patch = setupNode;
+    } else {
+        patchIfNotAlready = function (node, proto) {
+          if (!node[EXPANDO_UID]) {
+            node[EXPANDO_UID] = Object(true);
+            setupNode(node, proto);
+          }
+        };
+        patch = patchIfNotAlready;
+    }
+  
+    if (IE8) {
+      doesNotSupportDOMAttrModified = false;
+      (function (){
+        var
+          descriptor = gOPD(HTMLElementPrototype, ADD_EVENT_LISTENER),
+          addEventListener = descriptor.value,
+          patchedRemoveAttribute = function (name) {
+            var e = new CustomEvent(DOM_ATTR_MODIFIED, {bubbles: true});
+            e.attrName = name;
+            e.prevValue = getAttribute.call(this, name);
+            e.newValue = null;
+            e[REMOVAL] = e.attrChange = 2;
+            removeAttribute.call(this, name);
+            dispatchEvent.call(this, e);
+          },
+          patchedSetAttribute = function (name, value) {
+            var
+              had = hasAttribute.call(this, name),
+              old = had && getAttribute.call(this, name),
+              e = new CustomEvent(DOM_ATTR_MODIFIED, {bubbles: true})
+            ;
+            setAttribute.call(this, name, value);
+            e.attrName = name;
+            e.prevValue = had ? old : null;
+            e.newValue = value;
+            if (had) {
+              e[MODIFICATION] = e.attrChange = 1;
+            } else {
+              e[ADDITION] = e.attrChange = 0;
+            }
+            dispatchEvent.call(this, e);
+          },
+          onPropertyChange = function (e) {
+            // jshint eqnull:true
+            var
+              node = e.currentTarget,
+              superSecret = node[EXPANDO_UID],
+              propertyName = e.propertyName,
+              event
+            ;
+            if (superSecret.hasOwnProperty(propertyName)) {
+              superSecret = superSecret[propertyName];
+              event = new CustomEvent(DOM_ATTR_MODIFIED, {bubbles: true});
+              event.attrName = superSecret.name;
+              event.prevValue = superSecret.value || null;
+              event.newValue = (superSecret.value = node[propertyName] || null);
+              if (event.prevValue == null) {
+                event[ADDITION] = event.attrChange = 0;
+              } else {
+                event[MODIFICATION] = event.attrChange = 1;
+              }
+              dispatchEvent.call(node, event);
+            }
+          }
+        ;
+        descriptor.value = function (type, handler, capture) {
+          if (
+            type === DOM_ATTR_MODIFIED &&
+            this[ATTRIBUTE_CHANGED_CALLBACK] &&
+            this.setAttribute !== patchedSetAttribute
+          ) {
+            this[EXPANDO_UID] = {
+              className: {
+                name: 'class',
+                value: this.className
+              }
+            };
+            this.setAttribute = patchedSetAttribute;
+            this.removeAttribute = patchedRemoveAttribute;
+            addEventListener.call(this, 'propertychange', onPropertyChange);
+          }
+          addEventListener.call(this, type, handler, capture);
+        };
+        defineProperty(HTMLElementPrototype, ADD_EVENT_LISTENER, descriptor);
+      }());
+    } else if (!MutationObserver) {
+      documentElement[ADD_EVENT_LISTENER](DOM_ATTR_MODIFIED, DOMAttrModified);
+      documentElement.setAttribute(EXPANDO_UID, 1);
+      documentElement.removeAttribute(EXPANDO_UID);
+      if (doesNotSupportDOMAttrModified) {
+        onSubtreeModified = function (e) {
+          var
+            node = this,
+            oldAttributes,
+            newAttributes,
+            key
+          ;
+          if (node === e.target) {
+            oldAttributes = node[EXPANDO_UID];
+            node[EXPANDO_UID] = (newAttributes = getAttributesMirror(node));
+            for (key in newAttributes) {
+              if (!(key in oldAttributes)) {
+                // attribute was added
+                return callDOMAttrModified(
+                  0,
+                  node,
+                  key,
+                  oldAttributes[key],
+                  newAttributes[key],
+                  ADDITION
+                );
+              } else if (newAttributes[key] !== oldAttributes[key]) {
+                // attribute was changed
+                return callDOMAttrModified(
+                  1,
+                  node,
+                  key,
+                  oldAttributes[key],
+                  newAttributes[key],
+                  MODIFICATION
+                );
+              }
+            }
+            // checking if it has been removed
+            for (key in oldAttributes) {
+              if (!(key in newAttributes)) {
+                // attribute removed
+                return callDOMAttrModified(
+                  2,
+                  node,
+                  key,
+                  oldAttributes[key],
+                  newAttributes[key],
+                  REMOVAL
+                );
+              }
+            }
+          }
+        };
+        callDOMAttrModified = function (
+          attrChange,
+          currentTarget,
+          attrName,
+          prevValue,
+          newValue,
+          action
+        ) {
+          var e = {
+            attrChange: attrChange,
+            currentTarget: currentTarget,
+            attrName: attrName,
+            prevValue: prevValue,
+            newValue: newValue
+          };
+          e[action] = attrChange;
+          onDOMAttrModified(e);
+        };
+        getAttributesMirror = function (node) {
+          for (var
+            attr, name,
+            result = {},
+            attributes = node.attributes,
+            i = 0, length = attributes.length;
+            i < length; i++
+          ) {
+            attr = attributes[i];
+            name = attr.name;
+            if (name !== 'setAttribute') {
+              result[name] = attr.value;
+            }
+          }
+          return result;
+        };
+      }
+    }
+  
+    // set as enumerable, writable and configurable
+    document[REGISTER_ELEMENT] = function registerElement(type, options) {
+      upperType = type.toUpperCase();
+      if (setListener) {
+        // only first time document.registerElement is used
+        // we need to set this listener
+        // setting it by default might slow down for no reason
+        setListener = false;
+        if (MutationObserver) {
+          observer = (function(attached, detached){
+            function checkEmAll(list, callback) {
+              for (var i = 0, length = list.length; i < length; callback(list[i++])){}
+            }
+            return new MutationObserver(function (records) {
+              for (var
+                current, node, newValue,
+                i = 0, length = records.length; i < length; i++
+              ) {
+                current = records[i];
+                if (current.type === 'childList') {
+                  checkEmAll(current.addedNodes, attached);
+                  checkEmAll(current.removedNodes, detached);
+                } else {
+                  node = current.target;
+                  if (notFromInnerHTMLHelper &&
+                      node[ATTRIBUTE_CHANGED_CALLBACK] &&
+                      current.attributeName !== 'style') {
+                    newValue = getAttribute.call(node, current.attributeName);
+                    if (newValue !== current.oldValue) {
+                      node[ATTRIBUTE_CHANGED_CALLBACK](
+                        current.attributeName,
+                        current.oldValue,
+                        newValue
+                      );
+                    }
+                  }
+                }
+              }
+            });
+          }(executeAction(ATTACHED), executeAction(DETACHED)));
+          observe = function (node) {
+            observer.observe(
+              node,
+              {
+                childList: true,
+                subtree: true
+              }
+            );
+            return node;
+          };
+          observe(document);
+          if (attachShadow) {
+            HTMLElementPrototype.attachShadow = function () {
+              return observe(attachShadow.apply(this, arguments));
+            };
+          }
+        } else {
+          asapQueue = [];
+          document[ADD_EVENT_LISTENER]('DOMNodeInserted', onDOMNode(ATTACHED));
+          document[ADD_EVENT_LISTENER]('DOMNodeRemoved', onDOMNode(DETACHED));
+        }
+  
+        document[ADD_EVENT_LISTENER](DOM_CONTENT_LOADED, onReadyStateChange);
+        document[ADD_EVENT_LISTENER]('readystatechange', onReadyStateChange);
+  
+        document.importNode = function (node, deep) {
+          switch (node.nodeType) {
+            case 1:
+              return setupAll(document, importNode, [node, !!deep]);
+            case 11:
+              for (var
+                fragment = document.createDocumentFragment(),
+                childNodes = node.childNodes,
+                length = childNodes.length,
+                i = 0; i < length; i++
+              )
+                fragment.appendChild(document.importNode(childNodes[i], !!deep));
+              return fragment;
+            default:
+              return cloneNode.call(node, !!deep);
+          }
+        };
+  
+        HTMLElementPrototype.cloneNode = function (deep) {
+          return setupAll(this, cloneNode, [!!deep]);
+        };
+      }
+  
+      if (justSetup) return (justSetup = false);
+  
+      if (-2 < (
+        indexOf.call(types, PREFIX_IS + upperType) +
+        indexOf.call(types, PREFIX_TAG + upperType)
+      )) {
+        throwTypeError(type);
+      }
+  
+      if (!validName.test(upperType) || -1 < indexOf.call(invalidNames, upperType)) {
+        throw new Error('The type ' + type + ' is invalid');
+      }
+  
+      var
+        constructor = function () {
+          return extending ?
+            document.createElement(nodeName, upperType) :
+            document.createElement(nodeName);
+        },
+        opt = options || OP,
+        extending = hOP.call(opt, EXTENDS),
+        nodeName = extending ? options[EXTENDS].toUpperCase() : upperType,
+        upperType,
+        i
+      ;
+  
+      if (extending && -1 < (
+        indexOf.call(types, PREFIX_TAG + nodeName)
+      )) {
+        throwTypeError(nodeName);
+      }
+  
+      i = types.push((extending ? PREFIX_IS : PREFIX_TAG) + upperType) - 1;
+  
+      query = query.concat(
+        query.length ? ',' : '',
+        extending ? nodeName + '[is="' + type.toLowerCase() + '"]' : nodeName
+      );
+  
+      constructor.prototype = (
+        protos[i] = hOP.call(opt, 'prototype') ?
+          opt.prototype :
+          create(HTMLElementPrototype)
+      );
+  
+      if (query.length) loopAndVerify(
+        document.querySelectorAll(query),
+        ATTACHED
+      );
+  
+      return constructor;
+    };
+  
+    document.createElement = (patchedCreateElement = function (localName, typeExtension) {
+      var
+        is = getIs(typeExtension),
+        node = is ?
+          createElement.call(document, localName, secondArgument(is)) :
+          createElement.call(document, localName),
+        name = '' + localName,
+        i = indexOf.call(
+          types,
+          (is ? PREFIX_IS : PREFIX_TAG) +
+          (is || name).toUpperCase()
+        ),
+        setup = -1 < i
+      ;
+      if (is) {
+        node.setAttribute('is', is = is.toLowerCase());
+        if (setup) {
+          setup = isInQSA(name.toUpperCase(), is);
+        }
+      }
+      notFromInnerHTMLHelper = !document.createElement.innerHTMLHelper;
+      if (setup) patch(node, protos[i]);
+      return node;
+    });
+  
+  }
+  
+  // needed due unbelievable IE11 behavior
+  // https://github.com/WebReflection/document-register-element/issues/175#issuecomment-520904688
+  addEventListener(
+    'beforeunload',
+    function () {
+      delete document.createElement;
+      delete document.importNode;
+      delete document[REGISTER_ELEMENT];
+    },
+    false
+  );
+  
+  function ASAP() {
+    var queue = asapQueue.splice(0, asapQueue.length);
+    asapTimer = 0;
+    while (queue.length) {
+      queue.shift().call(
+        null, queue.shift()
+      );
+    }
+  }
+  
+  function loopAndVerify(list, action) {
+    for (var i = 0, length = list.length; i < length; i++) {
+      verifyAndSetupAndAction(list[i], action);
+    }
+  }
+  
+  function loopAndSetup(list) {
+    for (var i = 0, length = list.length, node; i < length; i++) {
+      node = list[i];
+      patch(node, protos[getTypeIndex(node)]);
+    }
+  }
+  
+  function executeAction(action) {
+    return function (node) {
+      if (isValidNode(node)) {
+        verifyAndSetupAndAction(node, action);
+        if (query.length) loopAndVerify(
+          node.querySelectorAll(query),
+          action
+        );
+      }
+    };
+  }
+  
+  function getTypeIndex(target) {
+    var
+      is = getAttribute.call(target, 'is'),
+      nodeName = target.nodeName.toUpperCase(),
+      i = indexOf.call(
+        types,
+        is ?
+            PREFIX_IS + is.toUpperCase() :
+            PREFIX_TAG + nodeName
+      )
+    ;
+    return is && -1 < i && !isInQSA(nodeName, is) ? -1 : i;
+  }
+  
+  function isInQSA(name, type) {
+    return -1 < query.indexOf(name + '[is="' + type + '"]');
+  }
+  
+  function onDOMAttrModified(e) {
+    var
+      node = e.currentTarget,
+      attrChange = e.attrChange,
+      attrName = e.attrName,
+      target = e.target,
+      addition = e[ADDITION] || 2,
+      removal = e[REMOVAL] || 3
+    ;
+    if (notFromInnerHTMLHelper &&
+        (!target || target === node) &&
+        node[ATTRIBUTE_CHANGED_CALLBACK] &&
+        attrName !== 'style' && (
+          e.prevValue !== e.newValue ||
+          // IE9, IE10, and Opera 12 gotcha
+          e.newValue === '' && (
+            attrChange === addition ||
+            attrChange === removal
+          )
+    )) {
+      node[ATTRIBUTE_CHANGED_CALLBACK](
+        attrName,
+        attrChange === addition ? null : e.prevValue,
+        attrChange === removal ? null : e.newValue
+      );
+    }
+  }
+  
+  function onDOMNode(action) {
+    var executor = executeAction(action);
+    return function (e) {
+      asapQueue.push(executor, e.target);
+      if (asapTimer) clearTimeout(asapTimer);
+      asapTimer = setTimeout(ASAP, 1);
+    };
+  }
+  
+  function onReadyStateChange(e) {
+    if (dropDomContentLoaded) {
+      dropDomContentLoaded = false;
+      e.currentTarget.removeEventListener(DOM_CONTENT_LOADED, onReadyStateChange);
+    }
+    if (query.length) loopAndVerify(
+      (e.target || document).querySelectorAll(query),
+      e.detail === DETACHED ? DETACHED : ATTACHED
+    );
+    if (IE8) purge();
+  }
+  
+  function patchedSetAttribute(name, value) {
+    // jshint validthis:true
+    var self = this;
+    setAttribute.call(self, name, value);
+    onSubtreeModified.call(self, {target: self});
+  }
+  
+  function setupAll(context, callback, args) {
+    var
+      node = callback.apply(context, args),
+      i = getTypeIndex(node)
+    ;
+    if (-1 < i) patch(node, protos[i]);
+    if (args.pop() && query.length)
+      loopAndSetup(node.querySelectorAll(query));
+    return node;
+  }
+  
+  function setupNode(node, proto) {
+    setPrototype(node, proto);
+    if (observer) {
+      observer.observe(node, attributesObserver);
+    } else {
+      if (doesNotSupportDOMAttrModified) {
+        node.setAttribute = patchedSetAttribute;
+        node[EXPANDO_UID] = getAttributesMirror(node);
+        node[ADD_EVENT_LISTENER](DOM_SUBTREE_MODIFIED, onSubtreeModified);
+      }
+      node[ADD_EVENT_LISTENER](DOM_ATTR_MODIFIED, onDOMAttrModified);
+    }
+    if (node[CREATED_CALLBACK] && notFromInnerHTMLHelper) {
+      node.created = true;
+      node[CREATED_CALLBACK]();
+      node.created = false;
+    }
+  }
+  
+  function purge() {
+    for (var
+      node,
+      i = 0,
+      length = targets.length;
+      i < length; i++
+    ) {
+      node = targets[i];
+      if (!documentElement.contains(node)) {
+        length--;
+        targets.splice(i--, 1);
+        verifyAndSetupAndAction(node, DETACHED);
+      }
+    }
+  }
+  
+  function throwTypeError(type) {
+    throw new Error('A ' + type + ' type is already registered');
+  }
+  
+  function verifyAndSetupAndAction(node, action) {
+    var
+      fn,
+      i = getTypeIndex(node),
+      counterAction
+    ;
+    if ((-1 < i) && !closest.call(node, 'TEMPLATE')) {
+      patchIfNotAlready(node, protos[i]);
+      i = 0;
+      if (action === ATTACHED && !node[ATTACHED]) {
+        node[DETACHED] = false;
+        node[ATTACHED] = true;
+        counterAction = 'connected';
+        i = 1;
+        if (IE8 && indexOf.call(targets, node) < 0) {
+          targets.push(node);
+        }
+      } else if (action === DETACHED && !node[DETACHED]) {
+        node[ATTACHED] = false;
+        node[DETACHED] = true;
+        counterAction = 'disconnected';
+        i = 1;
+      }
+      if (i && (fn = (
+        node[action + CALLBACK] ||
+        node[counterAction + CALLBACK]
+      ))) fn.call(node);
+    }
+  }
+  
+  // V1 in da House!
+  function CustomElementRegistry() {}
+  
+  CustomElementRegistry.prototype = {
+    constructor: CustomElementRegistry,
+    // a workaround for the stubborn WebKit
+    define: usableCustomElements ?
+      function (name, Class, options) {
+        if (options) {
+          CERDefine(name, Class, options);
+        } else {
+          var NAME = name.toUpperCase();
+          constructors[NAME] = {
+            constructor: Class,
+            create: [NAME]
+          };
+          nodeNames.set(Class, NAME);
+          customElements.define(name, Class);
+        }
+      } :
+      CERDefine,
+    get: usableCustomElements ?
+      function (name) {
+        return customElements.get(name) || get(name);
+      } :
+      get,
+    whenDefined: usableCustomElements ?
+      function (name) {
+        return Promise.race([
+          customElements.whenDefined(name),
+          whenDefined(name)
+        ]);
+      } :
+      whenDefined
+  };
+  
+  function CERDefine(name, Class, options) {
+    var
+      is = options && options[EXTENDS] || '',
+      CProto = Class.prototype,
+      proto = create(CProto),
+      attributes = Class.observedAttributes || empty,
+      definition = {prototype: proto}
+    ;
+    // TODO: is this needed at all since it's inherited?
+    // defineProperty(proto, 'constructor', {value: Class});
+    safeProperty(proto, CREATED_CALLBACK, {
+        value: function () {
+          if (justCreated) justCreated = false;
+          else if (!this[DRECEV1]) {
+            this[DRECEV1] = true;
+            new Class(this);
+            if (CProto[CREATED_CALLBACK])
+              CProto[CREATED_CALLBACK].call(this);
+            var info = constructors[nodeNames.get(Class)];
+            if (!usableCustomElements || info.create.length > 1) {
+              notifyAttributes(this);
+            }
+          }
+      }
+    });
+    safeProperty(proto, ATTRIBUTE_CHANGED_CALLBACK, {
+      value: function (name) {
+        if (-1 < indexOf.call(attributes, name)) {
+          if (CProto[ATTRIBUTE_CHANGED_CALLBACK])
+            CProto[ATTRIBUTE_CHANGED_CALLBACK].apply(this, arguments);
+        }
+      }
+    });
+    if (CProto[CONNECTED_CALLBACK]) {
+      safeProperty(proto, ATTACHED_CALLBACK, {
+        value: CProto[CONNECTED_CALLBACK]
+      });
+    }
+    if (CProto[DISCONNECTED_CALLBACK]) {
+      safeProperty(proto, DETACHED_CALLBACK, {
+        value: CProto[DISCONNECTED_CALLBACK]
+      });
+    }
+    if (is) definition[EXTENDS] = is;
+    name = name.toUpperCase();
+    constructors[name] = {
+      constructor: Class,
+      create: is ? [is, secondArgument(name)] : [name]
+    };
+    nodeNames.set(Class, name);
+    document[REGISTER_ELEMENT](name.toLowerCase(), definition);
+    whenDefined(name);
+    waitingList[name].r();
+  }
+  
+  function get(name) {
+    var info = constructors[name.toUpperCase()];
+    return info && info.constructor;
+  }
+  
+  function getIs(options) {
+    return typeof options === 'string' ?
+        options : (options && options.is || '');
+  }
+  
+  function notifyAttributes(self) {
+    var
+      callback = self[ATTRIBUTE_CHANGED_CALLBACK],
+      attributes = callback ? self.attributes : empty,
+      i = attributes.length,
+      attribute
+    ;
+    while (i--) {
+      attribute =  attributes[i]; // || attributes.item(i);
+      callback.call(
+        self,
+        attribute.name || attribute.nodeName,
+        null,
+        attribute.value || attribute.nodeValue
+      );
+    }
+  }
+  
+  function whenDefined(name) {
+    name = name.toUpperCase();
+    if (!(name in waitingList)) {
+      waitingList[name] = {};
+      waitingList[name].p = new Promise(function (resolve) {
+        waitingList[name].r = resolve;
+      });
+    }
+    return waitingList[name].p;
+  }
+  
+  function polyfillV1() {
+    if (customElements) delete window.customElements;
+    defineProperty(window, 'customElements', {
+      configurable: true,
+      value: new CustomElementRegistry()
+    });
+    defineProperty(window, 'CustomElementRegistry', {
+      configurable: true,
+      value: CustomElementRegistry
+    });
+    for (var
+      patchClass = function (name) {
+        var Class = window[name];
+        if (Class) {
+          window[name] = function CustomElementsV1(self) {
+            var info, isNative;
+            if (!self) self = this;
+            if (!self[DRECEV1]) {
+              justCreated = true;
+              info = constructors[nodeNames.get(self.constructor)];
+              isNative = usableCustomElements && info.create.length === 1;
+              self = isNative ?
+                Reflect.construct(Class, empty, info.constructor) :
+                document.createElement.apply(document, info.create);
+              self[DRECEV1] = true;
+              justCreated = false;
+              if (!isNative) notifyAttributes(self);
+            }
+            return self;
+          };
+          window[name].prototype = Class.prototype;
+          try {
+            Class.prototype.constructor = window[name];
+          } catch(WebKit) {
+            fixGetClass = true;
+            defineProperty(Class, DRECEV1, {value: window[name]});
+          }
+        }
+      },
+      Classes = htmlClass.get(/^HTML[A-Z]*[a-z]/),
+      i = Classes.length;
+      i--;
+      patchClass(Classes[i])
+    ) {}
+    (document.createElement = function (name, options) {
+      var is = getIs(options);
+      return is ?
+        patchedCreateElement.call(this, name, secondArgument(is)) :
+        patchedCreateElement.call(this, name);
+    });
+    if (!V0) {
+      justSetup = true;
+      document[REGISTER_ELEMENT]('');
+    }
+  }
+  
+  // if customElements is not there at all
+  if (!customElements || /^force/.test(polyfill.type)) polyfillV1();
+  else if(!polyfill.noBuiltIn) {
+    // if available test extends work as expected
+    try {
+      (function (DRE, options, name) {
+        var re = new RegExp('^<a\\s+is=(\'|")' + name + '\\1></a>$');
+        options[EXTENDS] = 'a';
+        DRE.prototype = create(HTMLAnchorElement.prototype);
+        DRE.prototype.constructor = DRE;
+        window.customElements.define(name, DRE, options);
+        if (
+          !re.test(document.createElement('a', {is: name}).outerHTML) ||
+          !re.test((new DRE()).outerHTML)
+        ) {
+          throw options;
+        }
+      }(
+        function DRE() {
+          return Reflect.construct(HTMLAnchorElement, [], DRE);
+        },
+        {},
+        'document-register-element-a' + UID
+      ));
+    } catch(o_O) {
+      // or force the polyfill if not
+      // and keep internal original reference
+      polyfillV1();
+    }
+  }
+  
+  // FireFox only issue
+  if(!polyfill.noBuiltIn) {
+    try {
+      if (createElement.call(document, 'a', 'a').outerHTML.indexOf('is') < 0)
+        throw {};
+    } catch(FireFox) {
+      secondArgument = function (is) {
+        return {is: is.toLowerCase()};
+      };
+    }
+  }
+  
+}
+
+module.exports = installCustomElements;
+installCustomElements(global);
+
+}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
 
 },{}],108:[function(_dereq_,module,exports){
-;(function(root) {
-  var CrossStorageHub = {};
-
-  /**
-   * Accepts an array of objects with two keys: origin and allow. The value
-   * of origin is expected to be a RegExp, and allow, an array of strings.
-   * The cross storage hub is then initialized to accept requests from any of
-   * the matching origins, allowing access to the associated lists of methods.
-   * Methods may include any of: get, set, del, getKeys and clear. A 'ready'
-   * message is sent to the parent window once complete.
-   *
-   * @example
-   * // Subdomain can get, but only root domain can set and del
-   * CrossStorageHub.init([
-   *   {origin: /\.example.com$/,        allow: ['get']},
-   *   {origin: /:(www\.)?example.com$/, allow: ['get', 'set', 'del']}
-   * ]);
-   *
-   * @param {array} permissions An array of objects with origin and allow
-   */
-  CrossStorageHub.init = function(permissions) {
-    var available = true;
-
-    // Return if localStorage is unavailable, or third party
-    // access is disabled
-    try {
-      if (!window.localStorage) available = false;
-    } catch (e) {
-      available = false;
-    }
-
-    if (!available) {
-      try {
-        return window.parent.postMessage('cross-storage:unavailable', '*');
-      } catch (e) {
-        return;
-      }
-    }
-
-    CrossStorageHub._permissions = permissions || [];
-    CrossStorageHub._installListener();
-    window.parent.postMessage('cross-storage:ready', '*');
-  };
-
-  /**
-   * Installs the necessary listener for the window message event. Accommodates
-   * IE8 and up.
-   *
-   * @private
-   */
-  CrossStorageHub._installListener = function() {
-    var listener = CrossStorageHub._listener;
-    if (window.addEventListener) {
-      window.addEventListener('message', listener, false);
-    } else {
-      window.attachEvent('onmessage', listener);
-    }
-  };
-
-  /**
-   * The message handler for all requests posted to the window. It ignores any
-   * messages having an origin that does not match the originally supplied
-   * pattern. Given a JSON object with one of get, set, del or getKeys as the
-   * method, the function performs the requested action and returns its result.
-   *
-   * @param {MessageEvent} message A message to be processed
-   */
-  CrossStorageHub._listener = function(message) {
-    var origin, targetOrigin, request, method, error, result, response;
-
-    // postMessage returns the string "null" as the origin for "file://"
-    origin = (message.origin === 'null') ? 'file://' : message.origin;
-
-    // Handle polling for a ready message
-    if (message.data === 'cross-storage:poll') {
-      return window.parent.postMessage('cross-storage:ready', message.origin);
-    }
-
-    // Ignore the ready message when viewing the hub directly
-    if (message.data === 'cross-storage:ready') return;
-
-    // Check whether message.data is a valid json
-    try {
-      request = JSON.parse(message.data);
-    } catch (err) {
-      return;
-    }
-
-    // Check whether request.method is a string
-    if (!request || typeof request.method !== 'string') {
-      return;
-    }
-
-    method = request.method.split('cross-storage:')[1];
-
-    if (!method) {
-      return;
-    } else if (!CrossStorageHub._permitted(origin, method)) {
-      error = 'Invalid permissions for ' + method;
-    } else {
-      try {
-        result = CrossStorageHub['_' + method](request.params);
-      } catch (err) {
-        error = err.message;
-      }
-    }
-
-    response = JSON.stringify({
-      id: request.id,
-      error: error,
-      result: result
-    });
-
-    // postMessage requires that the target origin be set to "*" for "file://"
-    targetOrigin = (origin === 'file://') ? '*' : origin;
-
-    window.parent.postMessage(response, targetOrigin);
-  };
-
-  /**
-   * Returns a boolean indicating whether or not the requested method is
-   * permitted for the given origin. The argument passed to method is expected
-   * to be one of 'get', 'set', 'del' or 'getKeys'.
-   *
-   * @param   {string} origin The origin for which to determine permissions
-   * @param   {string} method Requested action
-   * @returns {bool}   Whether or not the request is permitted
-   */
-  CrossStorageHub._permitted = function(origin, method) {
-    var available, i, entry, match;
-
-    available = ['get', 'set', 'del', 'clear', 'getKeys'];
-    if (!CrossStorageHub._inArray(method, available)) {
-      return false;
-    }
-
-    for (i = 0; i < CrossStorageHub._permissions.length; i++) {
-      entry = CrossStorageHub._permissions[i];
-      if (!(entry.origin instanceof RegExp) || !(entry.allow instanceof Array)) {
-        continue;
-      }
-
-      match = entry.origin.test(origin);
-      if (match && CrossStorageHub._inArray(method, entry.allow)) {
-        return true;
-      }
-    }
-
-    return false;
-  };
-
-  /**
-   * Sets a key to the specified value.
-   *
-   * @param {object} params An object with key and value
-   */
-  CrossStorageHub._set = function(params) {
-    window.localStorage.setItem(params.key, params.value);
-  };
-
-  /**
-   * Accepts an object with an array of keys for which to retrieve their values.
-   * Returns a single value if only one key was supplied, otherwise it returns
-   * an array. Any keys not set result in a null element in the resulting array.
-   *
-   * @param   {object} params An object with an array of keys
-   * @returns {*|*[]}  Either a single value, or an array
-   */
-  CrossStorageHub._get = function(params) {
-    var storage, result, i, value;
-
-    storage = window.localStorage;
-    result = [];
-
-    for (i = 0; i < params.keys.length; i++) {
-      try {
-        value = storage.getItem(params.keys[i]);
-      } catch (e) {
-        value = null;
-      }
-
-      result.push(value);
-    }
-
-    return (result.length > 1) ? result : result[0];
-  };
-
-  /**
-   * Deletes all keys specified in the array found at params.keys.
-   *
-   * @param {object} params An object with an array of keys
-   */
-  CrossStorageHub._del = function(params) {
-    for (var i = 0; i < params.keys.length; i++) {
-      window.localStorage.removeItem(params.keys[i]);
-    }
-  };
-
-  /**
-   * Clears localStorage.
-   */
-  CrossStorageHub._clear = function() {
-    window.localStorage.clear();
-  };
-
-  /**
-   * Returns an array of all keys stored in localStorage.
-   *
-   * @returns {string[]} The array of keys
-   */
-  CrossStorageHub._getKeys = function(params) {
-    var i, length, keys;
-
-    keys = [];
-    length = window.localStorage.length;
-
-    for (i = 0; i < length; i++) {
-      keys.push(window.localStorage.key(i));
-    }
-
-    return keys;
-  };
-
-  /**
-   * Returns whether or not a value is present in the array. Consists of an
-   * alternative to extending the array prototype for indexOf, since it's
-   * unavailable for IE8.
-   *
-   * @param   {*}    value The value to find
-   * @parma   {[]*}  array The array in which to search
-   * @returns {bool} Whether or not the value was found
-   */
-  CrossStorageHub._inArray = function(value, array) {
-    for (var i = 0; i < array.length; i++) {
-      if (value === array[i]) return true;
-    }
-
-    return false;
-  };
-
-  /**
-   * A cross-browser version of Date.now compatible with IE8 that avoids
-   * modifying the Date object.
-   *
-   * @return {int} The current timestamp in milliseconds
-   */
-  CrossStorageHub._now = function() {
-    if (typeof Date.now === 'function') {
-      return Date.now();
-    }
-
-    return new Date().getTime();
-  };
-
-  /**
-   * Export for various environments.
-   */
-  if (typeof module !== 'undefined' && module.exports) {
-    module.exports = CrossStorageHub;
-  } else if (typeof exports !== 'undefined') {
-    exports.CrossStorageHub = CrossStorageHub;
-  } else if (typeof define === 'function' && define.amd) {
-    define([], function() {
-      return CrossStorageHub;
-    });
-  } else {
-    root.CrossStorageHub = CrossStorageHub;
-  }
-}(this));
-
-},{}],109:[function(_dereq_,module,exports){
-module.exports = {
-  CrossStorageClient: _dereq_('./client.js'),
-  CrossStorageHub:    _dereq_('./hub.js')
-};
-
-},{"./client.js":107,"./hub.js":108}],110:[function(_dereq_,module,exports){
-/*! (C) Andrea Giammarchi - @WebReflection - ISC Style License */
-(function(window,polyfill){"use strict";var document=window.document,Object=window.Object;var htmlClass=function(info){var catchClass=/^[A-Z]+[a-z]/,filterBy=function(re){var arr=[],tag;for(tag in register){if(re.test(tag))arr.push(tag)}return arr},add=function(Class,tag){tag=tag.toLowerCase();if(!(tag in register)){register[Class]=(register[Class]||[]).concat(tag);register[tag]=register[tag.toUpperCase()]=Class}},register=(Object.create||Object)(null),htmlClass={},i,section,tags,Class;for(section in info){for(Class in info[section]){tags=info[section][Class];register[Class]=tags;for(i=0;i<tags.length;i++){register[tags[i].toLowerCase()]=register[tags[i].toUpperCase()]=Class}}}htmlClass.get=function get(tagOrClass){return typeof tagOrClass==="string"?register[tagOrClass]||(catchClass.test(tagOrClass)?[]:""):filterBy(tagOrClass)};htmlClass.set=function set(tag,Class){return catchClass.test(tag)?add(tag,Class):add(Class,tag),htmlClass};return htmlClass}({collections:{HTMLAllCollection:["all"],HTMLCollection:["forms"],HTMLFormControlsCollection:["elements"],HTMLOptionsCollection:["options"]},elements:{Element:["element"],HTMLAnchorElement:["a"],HTMLAppletElement:["applet"],HTMLAreaElement:["area"],HTMLAttachmentElement:["attachment"],HTMLAudioElement:["audio"],HTMLBRElement:["br"],HTMLBaseElement:["base"],HTMLBodyElement:["body"],HTMLButtonElement:["button"],HTMLCanvasElement:["canvas"],HTMLContentElement:["content"],HTMLDListElement:["dl"],HTMLDataElement:["data"],HTMLDataListElement:["datalist"],HTMLDetailsElement:["details"],HTMLDialogElement:["dialog"],HTMLDirectoryElement:["dir"],HTMLDivElement:["div"],HTMLDocument:["document"],HTMLElement:["element","abbr","address","article","aside","b","bdi","bdo","cite","code","command","dd","dfn","dt","em","figcaption","figure","footer","header","i","kbd","mark","nav","noscript","rp","rt","ruby","s","samp","section","small","strong","sub","summary","sup","u","var","wbr"],HTMLEmbedElement:["embed"],HTMLFieldSetElement:["fieldset"],HTMLFontElement:["font"],HTMLFormElement:["form"],HTMLFrameElement:["frame"],HTMLFrameSetElement:["frameset"],HTMLHRElement:["hr"],HTMLHeadElement:["head"],HTMLHeadingElement:["h1","h2","h3","h4","h5","h6"],HTMLHtmlElement:["html"],HTMLIFrameElement:["iframe"],HTMLImageElement:["img"],HTMLInputElement:["input"],HTMLKeygenElement:["keygen"],HTMLLIElement:["li"],HTMLLabelElement:["label"],HTMLLegendElement:["legend"],HTMLLinkElement:["link"],HTMLMapElement:["map"],HTMLMarqueeElement:["marquee"],HTMLMediaElement:["media"],HTMLMenuElement:["menu"],HTMLMenuItemElement:["menuitem"],HTMLMetaElement:["meta"],HTMLMeterElement:["meter"],HTMLModElement:["del","ins"],HTMLOListElement:["ol"],HTMLObjectElement:["object"],HTMLOptGroupElement:["optgroup"],HTMLOptionElement:["option"],HTMLOutputElement:["output"],HTMLParagraphElement:["p"],HTMLParamElement:["param"],HTMLPictureElement:["picture"],HTMLPreElement:["pre"],HTMLProgressElement:["progress"],HTMLQuoteElement:["blockquote","q","quote"],HTMLScriptElement:["script"],HTMLSelectElement:["select"],HTMLShadowElement:["shadow"],HTMLSlotElement:["slot"],HTMLSourceElement:["source"],HTMLSpanElement:["span"],HTMLStyleElement:["style"],HTMLTableCaptionElement:["caption"],HTMLTableCellElement:["td","th"],HTMLTableColElement:["col","colgroup"],HTMLTableElement:["table"],HTMLTableRowElement:["tr"],HTMLTableSectionElement:["thead","tbody","tfoot"],HTMLTemplateElement:["template"],HTMLTextAreaElement:["textarea"],HTMLTimeElement:["time"],HTMLTitleElement:["title"],HTMLTrackElement:["track"],HTMLUListElement:["ul"],HTMLUnknownElement:["unknown","vhgroupv","vkeygen"],HTMLVideoElement:["video"]},nodes:{Attr:["node"],Audio:["audio"],CDATASection:["node"],CharacterData:["node"],Comment:["#comment"],Document:["#document"],DocumentFragment:["#document-fragment"],DocumentType:["node"],HTMLDocument:["#document"],Image:["img"],Option:["option"],ProcessingInstruction:["node"],ShadowRoot:["#shadow-root"],Text:["#text"],XMLDocument:["xml"]}});if(typeof polyfill!=="object")polyfill={type:polyfill||"auto"};var REGISTER_ELEMENT="registerElement",EXPANDO_UID="__"+REGISTER_ELEMENT+(window.Math.random()*1e5>>0),ADD_EVENT_LISTENER="addEventListener",ATTACHED="attached",CALLBACK="Callback",DETACHED="detached",EXTENDS="extends",ATTRIBUTE_CHANGED_CALLBACK="attributeChanged"+CALLBACK,ATTACHED_CALLBACK=ATTACHED+CALLBACK,CONNECTED_CALLBACK="connected"+CALLBACK,DISCONNECTED_CALLBACK="disconnected"+CALLBACK,CREATED_CALLBACK="created"+CALLBACK,DETACHED_CALLBACK=DETACHED+CALLBACK,ADDITION="ADDITION",MODIFICATION="MODIFICATION",REMOVAL="REMOVAL",DOM_ATTR_MODIFIED="DOMAttrModified",DOM_CONTENT_LOADED="DOMContentLoaded",DOM_SUBTREE_MODIFIED="DOMSubtreeModified",PREFIX_TAG="<",PREFIX_IS="=",validName=/^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+$/,invalidNames=["ANNOTATION-XML","COLOR-PROFILE","FONT-FACE","FONT-FACE-SRC","FONT-FACE-URI","FONT-FACE-FORMAT","FONT-FACE-NAME","MISSING-GLYPH"],types=[],protos=[],query="",documentElement=document.documentElement,indexOf=types.indexOf||function(v){for(var i=this.length;i--&&this[i]!==v;){}return i},OP=Object.prototype,hOP=OP.hasOwnProperty,iPO=OP.isPrototypeOf,defineProperty=Object.defineProperty,empty=[],gOPD=Object.getOwnPropertyDescriptor,gOPN=Object.getOwnPropertyNames,gPO=Object.getPrototypeOf,sPO=Object.setPrototypeOf,hasProto=!!Object.__proto__,fixGetClass=false,DRECEV1="__dreCEv1",customElements=window.customElements,usableCustomElements=!/^force/.test(polyfill.type)&&!!(customElements&&customElements.define&&customElements.get&&customElements.whenDefined),Dict=Object.create||Object,Map=window.Map||function Map(){var K=[],V=[],i;return{get:function(k){return V[indexOf.call(K,k)]},set:function(k,v){i=indexOf.call(K,k);if(i<0)V[K.push(k)-1]=v;else V[i]=v}}},Promise=window.Promise||function(fn){var notify=[],done=false,p={catch:function(){return p},then:function(cb){notify.push(cb);if(done)setTimeout(resolve,1);return p}};function resolve(value){done=true;while(notify.length)notify.shift()(value)}fn(resolve);return p},justCreated=false,constructors=Dict(null),waitingList=Dict(null),nodeNames=new Map,secondArgument=function(is){return is.toLowerCase()},create=Object.create||function Bridge(proto){return proto?(Bridge.prototype=proto,new Bridge):this},setPrototype=sPO||(hasProto?function(o,p){o.__proto__=p;return o}:gOPN&&gOPD?function(){function setProperties(o,p){for(var key,names=gOPN(p),i=0,length=names.length;i<length;i++){key=names[i];if(!hOP.call(o,key)){defineProperty(o,key,gOPD(p,key))}}}return function(o,p){do{setProperties(o,p)}while((p=gPO(p))&&!iPO.call(p,o));return o}}():function(o,p){for(var key in p){o[key]=p[key]}return o}),MutationObserver=window.MutationObserver||window.WebKitMutationObserver,HTMLElementPrototype=(window.HTMLElement||window.Element||window.Node).prototype,IE8=!iPO.call(HTMLElementPrototype,documentElement),safeProperty=IE8?function(o,k,d){o[k]=d.value;return o}:defineProperty,isValidNode=IE8?function(node){return node.nodeType===1}:function(node){return iPO.call(HTMLElementPrototype,node)},targets=IE8&&[],attachShadow=HTMLElementPrototype.attachShadow,cloneNode=HTMLElementPrototype.cloneNode,dispatchEvent=HTMLElementPrototype.dispatchEvent,getAttribute=HTMLElementPrototype.getAttribute,hasAttribute=HTMLElementPrototype.hasAttribute,removeAttribute=HTMLElementPrototype.removeAttribute,setAttribute=HTMLElementPrototype.setAttribute,createElement=document.createElement,patchedCreateElement=createElement,attributesObserver=MutationObserver&&{attributes:true,characterData:true,attributeOldValue:true},DOMAttrModified=MutationObserver||function(e){doesNotSupportDOMAttrModified=false;documentElement.removeEventListener(DOM_ATTR_MODIFIED,DOMAttrModified)},asapQueue,asapTimer=0,V0=REGISTER_ELEMENT in document&&!/^force-all/.test(polyfill.type),setListener=true,justSetup=false,doesNotSupportDOMAttrModified=true,dropDomContentLoaded=true,notFromInnerHTMLHelper=true,onSubtreeModified,callDOMAttrModified,getAttributesMirror,observer,observe,patchIfNotAlready,patch,tmp;if(MutationObserver){tmp=document.createElement("div");tmp.innerHTML="<div><div></div></div>";new MutationObserver(function(mutations,observer){if(mutations[0]&&mutations[0].type=="childList"&&!mutations[0].removedNodes[0].childNodes.length){tmp=gOPD(HTMLElementPrototype,"innerHTML");var set=tmp&&tmp.set;if(set)defineProperty(HTMLElementPrototype,"innerHTML",{set:function(value){while(this.lastChild)this.removeChild(this.lastChild);set.call(this,value)}})}observer.disconnect();tmp=null}).observe(tmp,{childList:true,subtree:true});tmp.innerHTML=""}if(!V0){if(sPO||hasProto){patchIfNotAlready=function(node,proto){if(!iPO.call(proto,node)){setupNode(node,proto)}};patch=setupNode}else{patchIfNotAlready=function(node,proto){if(!node[EXPANDO_UID]){node[EXPANDO_UID]=Object(true);setupNode(node,proto)}};patch=patchIfNotAlready}if(IE8){doesNotSupportDOMAttrModified=false;(function(){var descriptor=gOPD(HTMLElementPrototype,ADD_EVENT_LISTENER),addEventListener=descriptor.value,patchedRemoveAttribute=function(name){var e=new CustomEvent(DOM_ATTR_MODIFIED,{bubbles:true});e.attrName=name;e.prevValue=getAttribute.call(this,name);e.newValue=null;e[REMOVAL]=e.attrChange=2;removeAttribute.call(this,name);dispatchEvent.call(this,e)},patchedSetAttribute=function(name,value){var had=hasAttribute.call(this,name),old=had&&getAttribute.call(this,name),e=new CustomEvent(DOM_ATTR_MODIFIED,{bubbles:true});setAttribute.call(this,name,value);e.attrName=name;e.prevValue=had?old:null;e.newValue=value;if(had){e[MODIFICATION]=e.attrChange=1}else{e[ADDITION]=e.attrChange=0}dispatchEvent.call(this,e)},onPropertyChange=function(e){var node=e.currentTarget,superSecret=node[EXPANDO_UID],propertyName=e.propertyName,event;if(superSecret.hasOwnProperty(propertyName)){superSecret=superSecret[propertyName];event=new CustomEvent(DOM_ATTR_MODIFIED,{bubbles:true});event.attrName=superSecret.name;event.prevValue=superSecret.value||null;event.newValue=superSecret.value=node[propertyName]||null;if(event.prevValue==null){event[ADDITION]=event.attrChange=0}else{event[MODIFICATION]=event.attrChange=1}dispatchEvent.call(node,event)}};descriptor.value=function(type,handler,capture){if(type===DOM_ATTR_MODIFIED&&this[ATTRIBUTE_CHANGED_CALLBACK]&&this.setAttribute!==patchedSetAttribute){this[EXPANDO_UID]={className:{name:"class",value:this.className}};this.setAttribute=patchedSetAttribute;this.removeAttribute=patchedRemoveAttribute;addEventListener.call(this,"propertychange",onPropertyChange)}addEventListener.call(this,type,handler,capture)};defineProperty(HTMLElementPrototype,ADD_EVENT_LISTENER,descriptor)})()}else if(!MutationObserver){documentElement[ADD_EVENT_LISTENER](DOM_ATTR_MODIFIED,DOMAttrModified);documentElement.setAttribute(EXPANDO_UID,1);documentElement.removeAttribute(EXPANDO_UID);if(doesNotSupportDOMAttrModified){onSubtreeModified=function(e){var node=this,oldAttributes,newAttributes,key;if(node===e.target){oldAttributes=node[EXPANDO_UID];node[EXPANDO_UID]=newAttributes=getAttributesMirror(node);for(key in newAttributes){if(!(key in oldAttributes)){return callDOMAttrModified(0,node,key,oldAttributes[key],newAttributes[key],ADDITION)}else if(newAttributes[key]!==oldAttributes[key]){return callDOMAttrModified(1,node,key,oldAttributes[key],newAttributes[key],MODIFICATION)}}for(key in oldAttributes){if(!(key in newAttributes)){return callDOMAttrModified(2,node,key,oldAttributes[key],newAttributes[key],REMOVAL)}}}};callDOMAttrModified=function(attrChange,currentTarget,attrName,prevValue,newValue,action){var e={attrChange:attrChange,currentTarget:currentTarget,attrName:attrName,prevValue:prevValue,newValue:newValue};e[action]=attrChange;onDOMAttrModified(e)};getAttributesMirror=function(node){for(var attr,name,result={},attributes=node.attributes,i=0,length=attributes.length;i<length;i++){attr=attributes[i];name=attr.name;if(name!=="setAttribute"){result[name]=attr.value}}return result}}}document[REGISTER_ELEMENT]=function registerElement(type,options){upperType=type.toUpperCase();if(setListener){setListener=false;if(MutationObserver){observer=function(attached,detached){function checkEmAll(list,callback){for(var i=0,length=list.length;i<length;callback(list[i++])){}}return new MutationObserver(function(records){for(var current,node,newValue,i=0,length=records.length;i<length;i++){current=records[i];if(current.type==="childList"){checkEmAll(current.addedNodes,attached);checkEmAll(current.removedNodes,detached)}else{node=current.target;if(notFromInnerHTMLHelper&&node[ATTRIBUTE_CHANGED_CALLBACK]&&current.attributeName!=="style"){newValue=getAttribute.call(node,current.attributeName);if(newValue!==current.oldValue){node[ATTRIBUTE_CHANGED_CALLBACK](current.attributeName,current.oldValue,newValue)}}}}})}(executeAction(ATTACHED),executeAction(DETACHED));observe=function(node){observer.observe(node,{childList:true,subtree:true});return node};observe(document);if(attachShadow){HTMLElementPrototype.attachShadow=function(){return observe(attachShadow.apply(this,arguments))}}}else{asapQueue=[];document[ADD_EVENT_LISTENER]("DOMNodeInserted",onDOMNode(ATTACHED));document[ADD_EVENT_LISTENER]("DOMNodeRemoved",onDOMNode(DETACHED))}document[ADD_EVENT_LISTENER](DOM_CONTENT_LOADED,onReadyStateChange);document[ADD_EVENT_LISTENER]("readystatechange",onReadyStateChange);HTMLElementPrototype.cloneNode=function(deep){var node=cloneNode.call(this,!!deep),i=getTypeIndex(node);if(-1<i)patch(node,protos[i]);if(deep&&query.length)loopAndSetup(node.querySelectorAll(query));return node}}if(justSetup)return justSetup=false;if(-2<indexOf.call(types,PREFIX_IS+upperType)+indexOf.call(types,PREFIX_TAG+upperType)){throwTypeError(type)}if(!validName.test(upperType)||-1<indexOf.call(invalidNames,upperType)){throw new Error("The type "+type+" is invalid")}var constructor=function(){return extending?document.createElement(nodeName,upperType):document.createElement(nodeName)},opt=options||OP,extending=hOP.call(opt,EXTENDS),nodeName=extending?options[EXTENDS].toUpperCase():upperType,upperType,i;if(extending&&-1<indexOf.call(types,PREFIX_TAG+nodeName)){throwTypeError(nodeName)}i=types.push((extending?PREFIX_IS:PREFIX_TAG)+upperType)-1;query=query.concat(query.length?",":"",extending?nodeName+'[is="'+type.toLowerCase()+'"]':nodeName);constructor.prototype=protos[i]=hOP.call(opt,"prototype")?opt.prototype:create(HTMLElementPrototype);if(query.length)loopAndVerify(document.querySelectorAll(query),ATTACHED);return constructor};document.createElement=patchedCreateElement=function(localName,typeExtension){var is=getIs(typeExtension),node=is?createElement.call(document,localName,secondArgument(is)):createElement.call(document,localName),name=""+localName,i=indexOf.call(types,(is?PREFIX_IS:PREFIX_TAG)+(is||name).toUpperCase()),setup=-1<i;if(is){node.setAttribute("is",is=is.toLowerCase());if(setup){setup=isInQSA(name.toUpperCase(),is)}}notFromInnerHTMLHelper=!document.createElement.innerHTMLHelper;if(setup)patch(node,protos[i]);return node}}function ASAP(){var queue=asapQueue.splice(0,asapQueue.length);asapTimer=0;while(queue.length){queue.shift().call(null,queue.shift())}}function loopAndVerify(list,action){for(var i=0,length=list.length;i<length;i++){verifyAndSetupAndAction(list[i],action)}}function loopAndSetup(list){for(var i=0,length=list.length,node;i<length;i++){node=list[i];patch(node,protos[getTypeIndex(node)])}}function executeAction(action){return function(node){if(isValidNode(node)){verifyAndSetupAndAction(node,action);if(query.length)loopAndVerify(node.querySelectorAll(query),action)}}}function getTypeIndex(target){var is=getAttribute.call(target,"is"),nodeName=target.nodeName.toUpperCase(),i=indexOf.call(types,is?PREFIX_IS+is.toUpperCase():PREFIX_TAG+nodeName);return is&&-1<i&&!isInQSA(nodeName,is)?-1:i}function isInQSA(name,type){return-1<query.indexOf(name+'[is="'+type+'"]')}function onDOMAttrModified(e){var node=e.currentTarget,attrChange=e.attrChange,attrName=e.attrName,target=e.target,addition=e[ADDITION]||2,removal=e[REMOVAL]||3;if(notFromInnerHTMLHelper&&(!target||target===node)&&node[ATTRIBUTE_CHANGED_CALLBACK]&&attrName!=="style"&&(e.prevValue!==e.newValue||e.newValue===""&&(attrChange===addition||attrChange===removal))){node[ATTRIBUTE_CHANGED_CALLBACK](attrName,attrChange===addition?null:e.prevValue,attrChange===removal?null:e.newValue)}}function onDOMNode(action){var executor=executeAction(action);return function(e){asapQueue.push(executor,e.target);if(asapTimer)clearTimeout(asapTimer);asapTimer=setTimeout(ASAP,1)}}function onReadyStateChange(e){if(dropDomContentLoaded){dropDomContentLoaded=false;e.currentTarget.removeEventListener(DOM_CONTENT_LOADED,onReadyStateChange)}if(query.length)loopAndVerify((e.target||document).querySelectorAll(query),e.detail===DETACHED?DETACHED:ATTACHED);if(IE8)purge()}function patchedSetAttribute(name,value){var self=this;setAttribute.call(self,name,value);onSubtreeModified.call(self,{target:self})}function setupNode(node,proto){setPrototype(node,proto);if(observer){observer.observe(node,attributesObserver)}else{if(doesNotSupportDOMAttrModified){node.setAttribute=patchedSetAttribute;node[EXPANDO_UID]=getAttributesMirror(node);node[ADD_EVENT_LISTENER](DOM_SUBTREE_MODIFIED,onSubtreeModified)}node[ADD_EVENT_LISTENER](DOM_ATTR_MODIFIED,onDOMAttrModified)}if(node[CREATED_CALLBACK]&&notFromInnerHTMLHelper){node.created=true;node[CREATED_CALLBACK]();node.created=false}}function purge(){for(var node,i=0,length=targets.length;i<length;i++){node=targets[i];if(!documentElement.contains(node)){length--;targets.splice(i--,1);verifyAndSetupAndAction(node,DETACHED)}}}function throwTypeError(type){throw new Error("A "+type+" type is already registered")}function verifyAndSetupAndAction(node,action){var fn,i=getTypeIndex(node),counterAction;if(-1<i){patchIfNotAlready(node,protos[i]);i=0;if(action===ATTACHED&&!node[ATTACHED]){node[DETACHED]=false;node[ATTACHED]=true;counterAction="connected";i=1;if(IE8&&indexOf.call(targets,node)<0){targets.push(node)}}else if(action===DETACHED&&!node[DETACHED]){node[ATTACHED]=false;node[DETACHED]=true;counterAction="disconnected";i=1}if(i&&(fn=node[action+CALLBACK]||node[counterAction+CALLBACK]))fn.call(node)}}function CustomElementRegistry(){}CustomElementRegistry.prototype={constructor:CustomElementRegistry,define:usableCustomElements?function(name,Class,options){if(options){CERDefine(name,Class,options)}else{var NAME=name.toUpperCase();constructors[NAME]={constructor:Class,create:[NAME]};nodeNames.set(Class,NAME);customElements.define(name,Class)}}:CERDefine,get:usableCustomElements?function(name){return customElements.get(name)||get(name)}:get,whenDefined:usableCustomElements?function(name){return Promise.race([customElements.whenDefined(name),whenDefined(name)])}:whenDefined};function CERDefine(name,Class,options){var is=options&&options[EXTENDS]||"",CProto=Class.prototype,proto=create(CProto),attributes=Class.observedAttributes||empty,definition={prototype:proto};safeProperty(proto,CREATED_CALLBACK,{value:function(){if(justCreated)justCreated=false;else if(!this[DRECEV1]){this[DRECEV1]=true;new Class(this);if(CProto[CREATED_CALLBACK])CProto[CREATED_CALLBACK].call(this);var info=constructors[nodeNames.get(Class)];if(!usableCustomElements||info.create.length>1){notifyAttributes(this)}}}});safeProperty(proto,ATTRIBUTE_CHANGED_CALLBACK,{value:function(name){if(-1<indexOf.call(attributes,name))CProto[ATTRIBUTE_CHANGED_CALLBACK].apply(this,arguments)}});if(CProto[CONNECTED_CALLBACK]){safeProperty(proto,ATTACHED_CALLBACK,{value:CProto[CONNECTED_CALLBACK]})}if(CProto[DISCONNECTED_CALLBACK]){safeProperty(proto,DETACHED_CALLBACK,{value:CProto[DISCONNECTED_CALLBACK]})}if(is)definition[EXTENDS]=is;name=name.toUpperCase();constructors[name]={constructor:Class,create:is?[is,secondArgument(name)]:[name]};nodeNames.set(Class,name);document[REGISTER_ELEMENT](name.toLowerCase(),definition);whenDefined(name);waitingList[name].r()}function get(name){var info=constructors[name.toUpperCase()];return info&&info.constructor}function getIs(options){return typeof options==="string"?options:options&&options.is||""}function notifyAttributes(self){var callback=self[ATTRIBUTE_CHANGED_CALLBACK],attributes=callback?self.attributes:empty,i=attributes.length,attribute;while(i--){attribute=attributes[i];callback.call(self,attribute.name||attribute.nodeName,null,attribute.value||attribute.nodeValue)}}function whenDefined(name){name=name.toUpperCase();if(!(name in waitingList)){waitingList[name]={};waitingList[name].p=new Promise(function(resolve){waitingList[name].r=resolve})}return waitingList[name].p}function polyfillV1(){if(customElements)delete window.customElements;defineProperty(window,"customElements",{configurable:true,value:new CustomElementRegistry});defineProperty(window,"CustomElementRegistry",{configurable:true,value:CustomElementRegistry});for(var patchClass=function(name){var Class=window[name];if(Class){window[name]=function CustomElementsV1(self){var info,isNative;if(!self)self=this;if(!self[DRECEV1]){justCreated=true;info=constructors[nodeNames.get(self.constructor)];isNative=usableCustomElements&&info.create.length===1;self=isNative?Reflect.construct(Class,empty,info.constructor):document.createElement.apply(document,info.create);self[DRECEV1]=true;justCreated=false;if(!isNative)notifyAttributes(self)}return self};window[name].prototype=Class.prototype;try{Class.prototype.constructor=window[name]}catch(WebKit){fixGetClass=true;defineProperty(Class,DRECEV1,{value:window[name]})}}},Classes=htmlClass.get(/^HTML[A-Z]*[a-z]/),i=Classes.length;i--;patchClass(Classes[i])){}document.createElement=function(name,options){var is=getIs(options);return is?patchedCreateElement.call(this,name,secondArgument(is)):patchedCreateElement.call(this,name)};if(!V0){justSetup=true;document[REGISTER_ELEMENT]("")}}if(!customElements||/^force/.test(polyfill.type))polyfillV1();else if(!polyfill.noBuiltIn){try{(function(DRE,options,name){var re=new RegExp("^<a\\s+is=('|\")"+name+"\\1></a>$");options[EXTENDS]="a";DRE.prototype=create(HTMLAnchorElement.prototype);DRE.prototype.constructor=DRE;window.customElements.define(name,DRE,options);if(!re.test(document.createElement("a",{is:name}).outerHTML)||!re.test((new DRE).outerHTML)){throw options}})(function DRE(){return Reflect.construct(HTMLAnchorElement,[],DRE)},{},"document-register-element-a")}catch(o_O){polyfillV1()}}if(!polyfill.noBuiltIn){try{createElement.call(document,"a","a")}catch(FireFox){secondArgument=function(is){return{is:is.toLowerCase()}}}}})(window);
-
-},{}],111:[function(_dereq_,module,exports){
-'use strict';
-
-var isCallable = _dereq_('is-callable');
-
-var toStr = Object.prototype.toString;
-var hasOwnProperty = Object.prototype.hasOwnProperty;
-
-var forEachArray = function forEachArray(array, iterator, receiver) {
-    for (var i = 0, len = array.length; i < len; i++) {
-        if (hasOwnProperty.call(array, i)) {
-            if (receiver == null) {
-                iterator(array[i], i, array);
-            } else {
-                iterator.call(receiver, array[i], i, array);
-            }
-        }
-    }
-};
-
-var forEachString = function forEachString(string, iterator, receiver) {
-    for (var i = 0, len = string.length; i < len; i++) {
-        // no such thing as a sparse string.
-        if (receiver == null) {
-            iterator(string.charAt(i), i, string);
-        } else {
-            iterator.call(receiver, string.charAt(i), i, string);
-        }
-    }
-};
-
-var forEachObject = function forEachObject(object, iterator, receiver) {
-    for (var k in object) {
-        if (hasOwnProperty.call(object, k)) {
-            if (receiver == null) {
-                iterator(object[k], k, object);
-            } else {
-                iterator.call(receiver, object[k], k, object);
-            }
-        }
-    }
-};
-
-var forEach = function forEach(list, iterator, thisArg) {
-    if (!isCallable(iterator)) {
-        throw new TypeError('iterator must be a function');
-    }
-
-    var receiver;
-    if (arguments.length >= 3) {
-        receiver = thisArg;
-    }
-
-    if (toStr.call(list) === '[object Array]') {
-        forEachArray(list, iterator, receiver);
-    } else if (typeof list === 'string') {
-        forEachString(list, iterator, receiver);
-    } else {
-        forEachObject(list, iterator, receiver);
-    }
-};
-
-module.exports = forEach;
-
-},{"is-callable":114}],112:[function(_dereq_,module,exports){
 (function (global){
 var win;
 
@@ -14847,19 +15579,15 @@ module.exports = win;
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
 
-},{}],113:[function(_dereq_,module,exports){
+},{}],109:[function(_dereq_,module,exports){
 (function (global){
-'use strict';
+(function (global, factory) {
+	typeof exports === 'object' && typeof module !== 'undefined' ? module.exports = factory() :
+	typeof define === 'function' && define.amd ? define(factory) :
+	(global.GlslCanvas = factory());
+}(this, (function () { 'use strict';
 
 var commonjsGlobal = typeof window !== 'undefined' ? window : typeof global !== 'undefined' ? global : typeof self !== 'undefined' ? self : {};
-
-
-
-
-
-function createCommonjsModule(fn, module) {
-	return module = { exports: {} }, fn(module, module.exports), module.exports;
-}
 
 var win;
 
@@ -14880,6 +15608,9 @@ var isFunction_1 = isFunction;
 var toString = Object.prototype.toString;
 
 function isFunction (fn) {
+  if (!fn) {
+    return false
+  }
   var string = toString.call(fn);
   return string === '[object Function]' ||
     (typeof fn === 'function' && string !== '[object RegExp]') ||
@@ -14891,67 +15622,9 @@ function isFunction (fn) {
       fn === window.prompt))
 }
 
-var trim_1 = createCommonjsModule(function (module, exports) {
-exports = module.exports = trim;
-
-function trim(str){
-  return str.replace(/^\s*|\s*$/g, '');
-}
-
-exports.left = function(str){
-  return str.replace(/^\s*/, '');
+var trim = function(string) {
+  return string.replace(/^\s+|\s+$/g, '');
 };
-
-exports.right = function(str){
-  return str.replace(/\s*$/, '');
-};
-});
-
-var forEach_1 = forEach;
-
-var toString$1 = Object.prototype.toString;
-var hasOwnProperty = Object.prototype.hasOwnProperty;
-
-function forEach(list, iterator, context) {
-    if (!isFunction_1(iterator)) {
-        throw new TypeError('iterator must be a function')
-    }
-
-    if (arguments.length < 3) {
-        context = this;
-    }
-    
-    if (toString$1.call(list) === '[object Array]')
-        forEachArray$1(list, iterator, context);
-    else if (typeof list === 'string')
-        forEachString(list, iterator, context);
-    else
-        forEachObject(list, iterator, context);
-}
-
-function forEachArray$1(array, iterator, context) {
-    for (var i = 0, len = array.length; i < len; i++) {
-        if (hasOwnProperty.call(array, i)) {
-            iterator.call(context, array[i], i, array);
-        }
-    }
-}
-
-function forEachString(string, iterator, context) {
-    for (var i = 0, len = string.length; i < len; i++) {
-        // no such thing as a sparse string.
-        iterator.call(context, string.charAt(i), i, string);
-    }
-}
-
-function forEachObject(object, iterator, context) {
-    for (var k in object) {
-        if (hasOwnProperty.call(object, k)) {
-            iterator.call(context, object[k], k, object);
-        }
-    }
-}
-
 var isArray = function(arg) {
       return Object.prototype.toString.call(arg) === '[object Array]';
     };
@@ -14962,29 +15635,29 @@ var parseHeaders = function (headers) {
 
   var result = {};
 
-  forEach_1(
-      trim_1(headers).split('\n')
-    , function (row) {
-        var index = row.indexOf(':')
-          , key = trim_1(row.slice(0, index)).toLowerCase()
-          , value = trim_1(row.slice(index + 1));
+  var headersArr = trim(headers).split('\n');
 
-        if (typeof(result[key]) === 'undefined') {
-          result[key] = value;
-        } else if (isArray(result[key])) {
-          result[key].push(value);
-        } else {
-          result[key] = [ result[key], value ];
-        }
-      }
-  );
+  for (var i = 0; i < headersArr.length; i++) {
+    var row = headersArr[i];
+    var index = row.indexOf(':')
+    , key = trim(row.slice(0, index)).toLowerCase()
+    , value = trim(row.slice(index + 1));
+
+    if (typeof(result[key]) === 'undefined') {
+      result[key] = value;
+    } else if (isArray(result[key])) {
+      result[key].push(value);
+    } else {
+      result[key] = [ result[key], value ];
+    }
+  }
 
   return result
 };
 
 var immutable = extend;
 
-var hasOwnProperty$1 = Object.prototype.hasOwnProperty;
+var hasOwnProperty = Object.prototype.hasOwnProperty;
 
 function extend() {
     var target = {};
@@ -14993,7 +15666,7 @@ function extend() {
         var source = arguments[i];
 
         for (var key in source) {
-            if (hasOwnProperty$1.call(source, key)) {
+            if (hasOwnProperty.call(source, key)) {
                 target[key] = source[key];
             }
         }
@@ -15735,7 +16408,8 @@ function parseUniforms(uniforms) {
 }
 
 function isCanvasVisible(canvas) {
-    return canvas.getBoundingClientRect().top + canvas.height > 0 && canvas.getBoundingClientRect().top < (window.innerHeight || document.documentElement.clientHeight);
+    var bound = canvas.getBoundingClientRect();
+    return bound.top + bound.height > 0 && bound.top < (window.innerHeight || document.documentElement.clientHeight);
 }
 
 function isPowerOf2(value) {
@@ -15758,6 +16432,13 @@ function isDiff(a, b) {
         return a.toString() !== b.toString();
     }
     return false;
+}
+
+function getFile(url) {
+    var httpRequest = new XMLHttpRequest();
+    httpRequest.open("GET", url, false);
+    httpRequest.send();
+    if (httpRequest.status == 200) return httpRequest.responseText;else return "";
 }
 
 function subscribeMixin$1(target) {
@@ -15897,6 +16578,8 @@ function subscribeMixin$1(target) {
 }
 
 // Texture management
+// GL texture wrapper object for keeping track of a global set of textures, keyed by a unique user-defined name
+
 var Texture = function () {
     function Texture(gl, name) {
         var options = arguments.length > 2 && arguments[2] !== undefined ? arguments[2] : {};
@@ -15999,6 +16682,12 @@ var Texture = function () {
                 if (isVideo) {
                     element = document.createElement('video');
                     element.autoplay = true;
+
+                    element.muted = true; /* required for modern browsers to autoplay video */
+                    setTimeout(function () {
+                        element.play(); /* doesn't block promise but needs a more elegant solution */
+                    }, 1);
+
                     options.filtering = 'nearest';
                     // element.preload = 'auto';
                     // element.style.display = 'none';
@@ -16074,6 +16763,8 @@ var Texture = function () {
                 this.sourceType = 'element';
 
                 if (element instanceof HTMLVideoElement) {
+                    this.width = this.source.videoWidth;
+                    this.height = this.source.videoHeight;
                     element.addEventListener('canplaythrough', function () {
                         _this2.intervalID = setInterval(function () {
                             _this2.update(options);
@@ -16142,8 +16833,9 @@ var Texture = function () {
             }
 
             this.powerOf2 = isPowerOf2(this.width) && isPowerOf2(this.height);
-            var defualtFilter = this.powerOf2 ? 'mipmap' : 'linear';
-            this.filtering = options.filtering || defualtFilter;
+            // let defualtFilter = (this.powerOf2 ? 'mipmap' : 'linear');
+            // this.filtering = options.filtering || defualtFilter;
+            this.filtering = options.filtering || 'linear';
 
             var gl = this.gl;
             this.bind();
@@ -16153,8 +16845,8 @@ var Texture = function () {
             // linear: linear blend from original image (no mips)
             // nearest: nearest pixel from original image (no mips, 'blocky' look)
             if (this.powerOf2) {
-                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, options.TEXTURE_WRAP_S || options.repeat && gl.REPEAT || gl.CLAMP_TO_EDGE);
-                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, options.TEXTURE_WRAP_T || options.repeat && gl.REPEAT || gl.CLAMP_TO_EDGE);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, options.TEXTURE_WRAP_S || gl.REPEAT);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, options.TEXTURE_WRAP_T || gl.REPEAT);
 
                 if (this.filtering === 'mipmap') {
                     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR); // TODO: use trilinear filtering by defualt instead?
@@ -16190,9 +16882,6 @@ var Texture = function () {
     }]);
     return Texture;
 }();
-
-// Report max texture size for a GL context
-
 
 Texture.getMaxTextureSize = function (gl) {
     return gl.getParameter(gl.MAX_TEXTURE_SIZE);
@@ -16235,20 +16924,29 @@ var GlslCanvas = function () {
         contextOptions = contextOptions || {};
         options = options || {};
 
-        this.width = canvas.clientWidth;
-        this.height = canvas.clientHeight;
+        if (canvas.hasAttribute('data-fullscreen') && (canvas.getAttribute('data-fullscreen') == "1" || canvas.getAttribute('data-fullscreen') == "true")) {
+            this.width = window.innerWidth;
+            this.height = window.innerHeight;
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        } else {
+            this.width = canvas.clientWidth;
+            this.height = canvas.clientHeight;
+        }
 
         this.canvas = canvas;
         this.gl = undefined;
+        this.deps = {};
         this.program = undefined;
         this.textures = {};
         this.buffers = {};
         this.uniforms = {};
         this.vbo = {};
         this.isValid = false;
+        this.animationFrameRequest = undefined;
 
         this.BUFFER_COUNT = 0;
-        this.TEXTURE_COUNT = 0;
+        // this.TEXTURE_COUNT = 0;
 
         this.vertexString = contextOptions.vertexString || '\n#ifdef GL_ES\nprecision mediump float;\n#endif\n\nattribute vec2 a_position;\nattribute vec2 a_texcoord;\n\nvarying vec2 v_texcoord;\n\nvoid main() {\n    gl_Position = vec4(a_position, 0.0, 1.0);\n    v_texcoord = a_texcoord;\n}\n';
         this.fragmentString = contextOptions.fragmentString || '\n#ifdef GL_ES\nprecision mediump float;\n#endif\n\nvarying vec2 v_texcoord;\n\nvoid main(){\n    gl_FragColor = vec4(0.0);\n}\n';
@@ -16332,9 +17030,13 @@ var GlslCanvas = function () {
             if (sandbox.nMouse > 1) {
                 sandbox.setMouse(mouse);
             }
-            sandbox.forceRender = sandbox.resize();
+
+            if (sandbox.resize()) {
+                sandbox.forceRender = true;
+            }
+
             sandbox.render();
-            window.requestAnimationFrame(RenderLoop);
+            sandbox.animationFrameRequest = window.requestAnimationFrame(RenderLoop);
         }
 
         // Start
@@ -16346,6 +17048,9 @@ var GlslCanvas = function () {
     createClass(GlslCanvas, [{
         key: 'destroy',
         value: function destroy() {
+            // Stop the animation
+            cancelAnimationFrame(this.animationFrameRequest);
+
             this.animated = false;
             this.isValid = false;
             for (var tex in this.textures) {
@@ -16363,12 +17068,14 @@ var GlslCanvas = function () {
                 var buffer = this.buffers[key];
                 this.gl.deleteProgram(buffer.program);
             }
+
             this.program = null;
             this.gl = null;
         }
     }, {
         key: 'load',
         value: function load(fragString, vertString) {
+            var _this2 = this;
 
             // Load vertex shader if there is one
             if (vertString) {
@@ -16380,6 +17087,25 @@ var GlslCanvas = function () {
                 this.fragmentString = fragString;
             }
 
+            var lines = this.fragmentString.split(/\r?\n/);
+            this.fragmentString = "#define PLATFORM_WEBGL\n#line 0\n";
+
+            lines.forEach(function (line, i) {
+                var line_trim = line.trim();
+                if (line_trim.startsWith('#include \"lygia')) {
+                    var dep = line_trim.substring(15).replace(/\'|\"|\;|\s/g, '');
+                    if (dep.endsWith('glsl')) {
+                        if (_this2.deps[dep] === undefined) {
+                            var url = "https://lygia.xyz" + dep;
+                            _this2.deps[dep] = getFile(url);
+                        }
+                        _this2.fragmentString += _this2.deps[dep] + '\n#line ' + (i + 1) + '\n';
+                    }
+                } else _this2.fragmentString += line + '\n';
+            });
+
+            // console.log(this.fragmentString);
+
             this.animated = false;
             this.nDelta = (this.fragmentString.match(/u_delta/g) || []).length;
             this.nTime = (this.fragmentString.match(/u_time/g) || []).length;
@@ -16389,16 +17115,16 @@ var GlslCanvas = function () {
 
             var nTextures = this.fragmentString.search(/sampler2D/g);
             if (nTextures) {
-                var lines = this.fragmentString.split('\n');
-                for (var i = 0; i < lines.length; i++) {
-                    var match = lines[i].match(/uniform\s*sampler2D\s*([\w]*);\s*\/\/\s*([\w|\:\/\/|\.|\-|\_]*)/i);
+                var _lines = this.fragmentString.split('\n');
+                for (var i = 0; i < _lines.length; i++) {
+                    var match = _lines[i].match(/uniform\s*sampler2D\s*([\w]*);\s*\/\/\s*([\w|\:\/\/|\.|\-|\_]*)/i);
                     if (match) {
                         var ext = match[2].split('.').pop().toLowerCase();
                         if (match[1] && match[2] && (ext === 'jpg' || ext === 'jpeg' || ext === 'png' || ext === 'ogv' || ext === 'webm' || ext === 'mp4')) {
                             this.setUniform(match[1], match[2]);
                         }
                     }
-                    var main = lines[i].match(/\s*void\s*main\s*/g);
+                    var main = _lines[i].match(/\s*void\s*main\s*/g);
                     if (main) {
                         break;
                     }
@@ -16435,11 +17161,13 @@ var GlslCanvas = function () {
                 this.loadPrograms(buffers);
             }
             this.buffers = buffers;
+            this.texureIndex = this.BUFFER_COUNT;
 
             // Trigger event
             this.trigger('load', {});
 
             this.forceRender = true;
+            this.render();
         }
     }, {
         key: 'test',
@@ -16498,7 +17226,7 @@ var GlslCanvas = function () {
     }, {
         key: 'loadTexture',
         value: function loadTexture(name, urlElementOrData, options) {
-            var _this2 = this;
+            var _this3 = this;
 
             if (!options) {
                 options = {};
@@ -16518,13 +17246,13 @@ var GlslCanvas = function () {
                 if (this.textures[name]) {
                     this.textures[name].load(options);
                     this.textures[name].on('loaded', function (args) {
-                        _this2.forceRender = true;
+                        _this3.forceRender = true;
                     });
                 }
             } else {
                 this.textures[name] = new Texture(this.gl, name, options);
                 this.textures[name].on('loaded', function (args) {
-                    _this2.forceRender = true;
+                    _this3.forceRender = true;
                 });
             }
         }
@@ -16557,9 +17285,9 @@ var GlslCanvas = function () {
                     this.loadTexture(parsed[u].name, parsed[u].value[0]);
                 } else {
                     this.uniform(parsed[u].method, parsed[u].type, parsed[u].name, parsed[u].value);
-                    this.forceRender = true;
                 }
             }
+            this.forceRender = true;
         }
     }, {
         key: 'setMouse',
@@ -16571,13 +17299,7 @@ var GlslCanvas = function () {
                 var mouse_x = (mouse.x - rect.left) * this.realToCSSPixels;
                 var mouse_y = this.canvas.height - (mouse.y - rect.top) * this.realToCSSPixels;
 
-                for (var key in this.buffers) {
-                    var buffer = this.buffers[key];
-                    this.gl.useProgram(buffer.program);
-                    this.gl.uniform2f(this.gl.getUniformLocation(buffer.program, 'u_mouse'), mouse_x, mouse_y);
-                }
-                this.gl.useProgram(this.program);
-                this.gl.uniform2f(this.gl.getUniformLocation(this.program, 'u_mouse'), mouse_x, mouse_y);
+                this.uniform('2f', 'vec2', 'u_mouse', mouse_x, mouse_y);
             }
         }
 
@@ -16595,14 +17317,23 @@ var GlslCanvas = function () {
             }
 
             var change = isDiff(uniform.value, value);
-            if (change || this.change || uniform.location === undefined || uniform.value === undefined) {
-                uniform.name = name;
-                uniform.value = value;
-                uniform.type = type;
-                uniform.method = 'uniform' + method;
-                uniform.location = this.gl.getUniformLocation(this.program, name);
 
+            // remember and keep track of uniforms location to save calls
+            if (change || this.change || !uniform.location || !uniform.value) {
+                uniform.name = name;
+                uniform.type = type;
+                uniform.value = value;
+                uniform.method = 'uniform' + method;
+                this.gl.useProgram(this.program);
+                uniform.location = this.gl.getUniformLocation(this.program, name);
                 this.gl[uniform.method].apply(this.gl, [uniform.location].concat(uniform.value));
+                // If there is change update and there is buffer update manually one by one
+                for (var key in this.buffers) {
+                    var buffer = this.buffers[key];
+                    this.gl.useProgram(buffer.program);
+                    var location = this.gl.getUniformLocation(buffer.program, name);
+                    this.gl[uniform.method].apply(this.gl, [location].concat(uniform.value));
+                }
             }
         }
     }, {
@@ -16611,7 +17342,18 @@ var GlslCanvas = function () {
             if (this.textures[name] === undefined) {
                 this.loadTexture(name, texture, options);
             } else {
-                return true;
+                this.uniform('1i', 'sampler2D', name, this.texureIndex);
+
+                for (var key in this.buffers) {
+                    var buffer = this.buffers[key];
+                    this.gl.useProgram(buffer.program);
+                    this.gl.activeTexture(this.gl.TEXTURE0 + this.texureIndex);
+                    this.gl.bindTexture(this.gl.TEXTURE_2D, this.textures[name].texture);
+                }
+                this.gl.useProgram(this.program);
+                this.gl.activeTexture(this.gl.TEXTURE0 + this.texureIndex);
+                this.gl.bindTexture(this.gl.TEXTURE_2D, this.textures[name].texture);
+                this.uniform('2f', 'vec2', name + 'Resolution', this.textures[name].width, this.textures[name].height);
             }
         }
     }, {
@@ -16633,7 +17375,6 @@ var GlslCanvas = function () {
                     this.gl.canvas.height = displayHeight;
                     // Set the viewport to match
                     this.gl.viewport(0, 0, this.gl.canvas.width, this.gl.canvas.height);
-                    // this.gl.viewport(0, 0, this.gl.drawingBufferWidth, this.gl.drawingBufferHeight);
                 }
                 this.width = this.canvas.clientWidth;
                 this.height = this.canvas.clientHeight;
@@ -16647,8 +17388,44 @@ var GlslCanvas = function () {
         key: 'render',
         value: function render() {
             this.visible = isCanvasVisible(this.canvas);
-            if (this.forceRender || this.animated && this.visible && !this.paused) {
+            if (this.forceRender || this.change || this.animated && this.visible && !this.paused) {
+
+                // Update Uniforms when are need
+                var date = new Date();
+                var now = performance.now();
+                this.timeDelta = (now - this.timePrev) / 1000.0;
+                this.timePrev = now;
+                if (this.nDelta > 1) {
+                    // set the delta time uniform
+                    this.uniform('1f', 'float', 'u_delta', this.timeDelta);
+                }
+
+                if (this.nTime > 1) {
+                    // set the elapsed time uniform
+                    this.uniform('1f', 'float', 'u_time', (now - this.timeLoad) / 1000.0);
+                }
+
+                if (this.nDate) {
+                    // Set date uniform: year/month/day/time_in_sec
+                    this.uniform('4f', 'float', 'u_date', date.getFullYear(), date.getMonth(), date.getDate(), date.getHours() * 3600 + date.getMinutes() * 60 + date.getSeconds() + date.getMilliseconds() * 0.001);
+                }
+
+                // set the resolution uniform
+                this.uniform('2f', 'vec2', 'u_resolution', this.canvas.width, this.canvas.height);
+
+                for (var key in this.buffers) {
+                    var buffer = this.buffers[key];
+                    this.uniform('1i', 'sampler2D', buffer.name, buffer.bundle.input.index);
+                }
+
+                this.texureIndex = this.BUFFER_COUNT;
+                for (var tex in this.textures) {
+                    this.uniformTexture(tex);
+                    this.texureIndex++;
+                }
+
                 this.renderPrograms();
+
                 // Trigger event
                 this.trigger('render', {});
                 this.change = false;
@@ -16665,94 +17442,26 @@ var GlslCanvas = function () {
         value: function play() {
             this.paused = false;
         }
-    }, {
-        key: 'version',
-        value: function version() {
-            return '0.0.27';
-        }
 
         // render main and buffers programs
 
     }, {
         key: 'renderPrograms',
         value: function renderPrograms() {
-            var gl = this.gl,
-                W = gl.canvas.width,
-                H = gl.canvas.height;
-            this.updateVariables();
+            var gl = this.gl;
+            var W = gl.canvas.width;
+            var H = gl.canvas.height;
+
             gl.viewport(0, 0, W, H);
+
             for (var key in this.buffers) {
                 var buffer = this.buffers[key];
-                this.updateUniforms(buffer.program, key);
                 buffer.bundle.render(W, H, buffer.program, buffer.name);
                 gl.bindFramebuffer(gl.FRAMEBUFFER, null);
             }
-            this.updateUniforms(this.program, 'main');
+
+            gl.useProgram(this.program);
             gl.drawArrays(gl.TRIANGLES, 0, 6);
-        }
-
-        // update glslCanvas variables
-
-    }, {
-        key: 'updateVariables',
-        value: function updateVariables() {
-            var glsl = this;
-            var date = new Date();
-            var now = performance.now();
-            var variables = this.variables || {};
-            variables.prev = variables.prev || now;
-            variables.delta = (now - variables.prev) / 1000.0;
-            variables.prev = now;
-            variables.load = glsl.timeLoad;
-            variables.time = (now - glsl.timeLoad) / 1000.0;
-            variables.year = date.getFullYear();
-            variables.month = date.getMonth();
-            variables.date = date.getDate();
-            variables.daytime = date.getHours() * 3600 + date.getMinutes() * 60 + date.getSeconds() + date.getMilliseconds() * 0.001;
-            this.variables = variables;
-        }
-
-        // update uniforms per program
-
-    }, {
-        key: 'updateUniforms',
-        value: function updateUniforms(program, key) {
-            var gl = this.gl,
-                variables = this.variables;
-            gl.useProgram(program);
-            if (this.nDelta > 1) {
-                // set the delta time uniform
-                gl.uniform1f(gl.getUniformLocation(program, 'u_delta'), variables.delta);
-            }
-            if (this.nTime > 1) {
-                // set the elapsed time uniform
-                gl.uniform1f(gl.getUniformLocation(program, 'u_time'), variables.time);
-            }
-            if (this.nDate) {
-                // Set date uniform: year/month/day/time_in_sec
-                gl.uniform4f(gl.getUniformLocation(program, 'u_date'), variables.year, variables.month, variables.date, variables.daytime);
-            }
-            // set the resolution uniform
-            gl.uniform2f(gl.getUniformLocation(program, 'u_resolution'), this.canvas.width, this.canvas.height);
-            // this.uniform('2f', 'vec2', 'u_resolution', this.canvas.width, this.canvas.height);
-            for (var _key3 in this.buffers) {
-                var buffer = this.buffers[_key3];
-                gl.uniform1i(gl.getUniformLocation(program, buffer.name), buffer.bundle.input.index);
-            }
-            this.TEXTURE_COUNT = this.BUFFER_COUNT;
-            for (var name in this.textures) {
-                if (this.uniformTexture(name, null, {
-                    filtering: 'mipmap',
-                    repeat: true
-                })) {
-                    var texture = this.textures[name];
-                    gl.activeTexture(gl.TEXTURE0 + this.TEXTURE_COUNT);
-                    gl.bindTexture(gl.TEXTURE_2D, texture.texture);
-                    gl.uniform1i(gl.getUniformLocation(program, name), this.TEXTURE_COUNT);
-                    gl.uniform2f(gl.getUniformLocation(program, name + 'Resolution'), texture.width, texture.height);
-                    this.TEXTURE_COUNT++;
-                }
-            }
         }
 
         // parse input strings
@@ -16779,7 +17488,6 @@ var GlslCanvas = function () {
         value: function loadPrograms(buffers) {
             var glsl = this;
             var gl = this.gl;
-            var i = 0;
             var vertex = createShader(glsl, glsl.vertexString, gl.VERTEX_SHADER);
             for (var key in buffers) {
                 var buffer = buffers[key];
@@ -16791,11 +17499,10 @@ var GlslCanvas = function () {
                     glsl.isValid = true;
                 }
                 var program = createProgram(glsl, [vertex, fragment]);
-                buffer.name = 'u_buffer' + i;
+                buffer.name = key;
                 buffer.program = program;
                 buffer.bundle = glsl.createSwappableBuffer(glsl.canvas.width, glsl.canvas.height, program);
                 gl.deleteShader(fragment);
-                i++;
             }
             gl.deleteShader(vertex);
         }
@@ -16907,6 +17614,11 @@ var GlslCanvas = function () {
             }
             gl.useProgram(this.program);
         }
+    }, {
+        key: 'version',
+        value: function version() {
+            return '0.1.7';
+        }
     }]);
     return GlslCanvas;
 }();
@@ -16928,57 +17640,21 @@ window.addEventListener('load', function () {
     loadAllGlslCanvas();
 });
 
-module.exports = GlslCanvas;
+return GlslCanvas;
+
+})));
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
 
-},{}],114:[function(_dereq_,module,exports){
-'use strict';
-
-var fnToStr = Function.prototype.toString;
-
-var constructorRegex = /^\s*class /;
-var isES6ClassFn = function isES6ClassFn(value) {
-	try {
-		var fnStr = fnToStr.call(value);
-		var singleStripped = fnStr.replace(/\/\/.*\n/g, '');
-		var multiStripped = singleStripped.replace(/\/\*[.\s\S]*\*\//g, '');
-		var spaceStripped = multiStripped.replace(/\n/mg, ' ').replace(/ {2}/g, ' ');
-		return constructorRegex.test(spaceStripped);
-	} catch (e) {
-		return false; // not a function
-	}
-};
-
-var tryFunctionObject = function tryFunctionObject(value) {
-	try {
-		if (isES6ClassFn(value)) { return false; }
-		fnToStr.call(value);
-		return true;
-	} catch (e) {
-		return false;
-	}
-};
-var toStr = Object.prototype.toString;
-var fnClass = '[object Function]';
-var genClass = '[object GeneratorFunction]';
-var hasToStringTag = typeof Symbol === 'function' && typeof Symbol.toStringTag === 'symbol';
-
-module.exports = function isCallable(value) {
-	if (!value) { return false; }
-	if (typeof value !== 'function' && typeof value !== 'object') { return false; }
-	if (hasToStringTag) { return tryFunctionObject(value); }
-	if (isES6ClassFn(value)) { return false; }
-	var strClass = toStr.call(value);
-	return strClass === fnClass || strClass === genClass;
-};
-
-},{}],115:[function(_dereq_,module,exports){
+},{}],110:[function(_dereq_,module,exports){
 module.exports = isFunction
 
 var toString = Object.prototype.toString
 
 function isFunction (fn) {
+  if (!fn) {
+    return false
+  }
   var string = toString.call(fn)
   return string === '[object Function]' ||
     (typeof fn === 'function' && string !== '[object RegExp]') ||
@@ -16990,9 +17666,10 @@ function isFunction (fn) {
       fn === window.prompt))
 };
 
-},{}],116:[function(_dereq_,module,exports){
-var trim = _dereq_('trim')
-  , forEach = _dereq_('for-each')
+},{}],111:[function(_dereq_,module,exports){
+var trim = function(string) {
+  return string.replace(/^\s+|\s+$/g, '');
+}
   , isArray = function(arg) {
       return Object.prototype.toString.call(arg) === '[object Array]';
     }
@@ -17003,42 +17680,27 @@ module.exports = function (headers) {
 
   var result = {}
 
-  forEach(
-      trim(headers).split('\n')
-    , function (row) {
-        var index = row.indexOf(':')
-          , key = trim(row.slice(0, index)).toLowerCase()
-          , value = trim(row.slice(index + 1))
+  var headersArr = trim(headers).split('\n')
 
-        if (typeof(result[key]) === 'undefined') {
-          result[key] = value
-        } else if (isArray(result[key])) {
-          result[key].push(value)
-        } else {
-          result[key] = [ result[key], value ]
-        }
-      }
-  )
+  for (var i = 0; i < headersArr.length; i++) {
+    var row = headersArr[i]
+    var index = row.indexOf(':')
+    , key = trim(row.slice(0, index)).toLowerCase()
+    , value = trim(row.slice(index + 1))
+
+    if (typeof(result[key]) === 'undefined') {
+      result[key] = value
+    } else if (isArray(result[key])) {
+      result[key].push(value)
+    } else {
+      result[key] = [ result[key], value ]
+    }
+  }
 
   return result
 }
-},{"for-each":111,"trim":117}],117:[function(_dereq_,module,exports){
 
-exports = module.exports = trim;
-
-function trim(str){
-  return str.replace(/^\s*|\s*$/g, '');
-}
-
-exports.left = function(str){
-  return str.replace(/^\s*/, '');
-};
-
-exports.right = function(str){
-  return str.replace(/\s*$/, '');
-};
-
-},{}],118:[function(_dereq_,module,exports){
+},{}],112:[function(_dereq_,module,exports){
 "use strict";
 var window = _dereq_("global/window")
 var isFunction = _dereq_("is-function")
@@ -17287,7 +17949,7 @@ function getXml(xhr) {
 
 function noop() {}
 
-},{"global/window":112,"is-function":115,"parse-headers":116,"xtend":119}],119:[function(_dereq_,module,exports){
+},{"global/window":108,"is-function":110,"parse-headers":111,"xtend":113}],113:[function(_dereq_,module,exports){
 module.exports = extend
 
 var hasOwnProperty = Object.prototype.hasOwnProperty;
@@ -17308,460 +17970,486 @@ function extend() {
     return target
 }
 
-},{}],120:[function(_dereq_,module,exports){
-'use strict';
+},{}],114:[function(_dereq_,module,exports){
+"use strict";
 
-var _createClass = _dereq_('babel-runtime/helpers/create-class')['default'];
+var _createClass = _dereq_("babel-runtime/helpers/create-class")["default"];
 
-var _classCallCheck = _dereq_('babel-runtime/helpers/class-call-check')['default'];
+var _classCallCheck = _dereq_("babel-runtime/helpers/class-call-check")["default"];
 
-var _Object$keys = _dereq_('babel-runtime/core-js/object/keys')['default'];
+var _Object$keys = _dereq_("babel-runtime/core-js/object/keys")["default"];
 
-var _Object$create = _dereq_('babel-runtime/core-js/object/create')['default'];
+var _Object$create = _dereq_("babel-runtime/core-js/object/create")["default"];
 
-var _interopRequireDefault = _dereq_('babel-runtime/helpers/interop-require-default')['default'];
+var _interopRequireDefault = _dereq_("babel-runtime/helpers/interop-require-default")["default"];
 
-Object.defineProperty(exports, '__esModule', {
-    value: true
+Object.defineProperty(exports, "__esModule", {
+  value: true
 });
 
-_dereq_('document-register-element');
+_dereq_("document-register-element");
 
-var _coreShader = _dereq_('./core/Shader');
+var _coreShader = _dereq_("./core/Shader");
 
 var _coreShader2 = _interopRequireDefault(_coreShader);
 
-var _coreEditor = _dereq_('./core/Editor');
+var _coreEditor = _dereq_("./core/Editor");
 
-var _uiMenu = _dereq_('./ui/Menu');
+var _uiMenu = _dereq_("./ui/Menu");
 
 var _uiMenu2 = _interopRequireDefault(_uiMenu);
 
-var _uiHelpers = _dereq_('./ui/Helpers');
+var _uiHelpers = _dereq_("./ui/Helpers");
 
 var _uiHelpers2 = _interopRequireDefault(_uiHelpers);
 
-var _uiErrorsDisplay = _dereq_('./ui/ErrorsDisplay');
+var _uiErrorsDisplay = _dereq_("./ui/ErrorsDisplay");
 
 var _uiErrorsDisplay2 = _interopRequireDefault(_uiErrorsDisplay);
 
-var _uiVisualDebugger = _dereq_('./ui/VisualDebugger');
+var _uiVisualDebugger = _dereq_("./ui/VisualDebugger");
 
 var _uiVisualDebugger2 = _interopRequireDefault(_uiVisualDebugger);
 
-var _uiExportIcon = _dereq_('./ui/ExportIcon');
+var _uiExportIcon = _dereq_("./ui/ExportIcon");
 
 var _uiExportIcon2 = _interopRequireDefault(_uiExportIcon);
 
-var _ioFileDrop = _dereq_('./io/FileDrop');
+var _ioFileDrop = _dereq_("./io/FileDrop");
 
 var _ioFileDrop2 = _interopRequireDefault(_ioFileDrop);
 
-var _ioHashWatch = _dereq_('./io/HashWatch');
+var _ioHashWatch = _dereq_("./io/HashWatch");
 
 var _ioHashWatch2 = _interopRequireDefault(_ioHashWatch);
 
-var _ioBufferManager = _dereq_('./io/BufferManager');
+var _ioBufferManager = _dereq_("./io/BufferManager");
 
 var _ioBufferManager2 = _interopRequireDefault(_ioBufferManager);
 
-var _ioLocalStorage = _dereq_('./io/LocalStorage');
+var _ioLocalStorage = _dereq_("./io/LocalStorage");
 
 var _ioLocalStorage2 = _interopRequireDefault(_ioLocalStorage);
 
 // Import Utils
 
-var _xhr = _dereq_('xhr');
+var _xhr = _dereq_("xhr");
 
 var _xhr2 = _interopRequireDefault(_xhr);
 
-var _toolsMixin = _dereq_('./tools/mixin');
+var _toolsMixin = _dereq_("./tools/mixin");
 
-// 3er Parties
+var _toolsDownload = _dereq_("./tools/download");
 
-var _vendorFileSaverMinJs = _dereq_('./vendor/FileSaver.min.js');
+var _toolsCommon = _dereq_("./tools/common");
 
-// Cross storage for Openframe -- allows restricted access to certain localStorage operations
-// on the openframe domain
+var _codemirror = _dereq_("codemirror");
 
-var _crossStorage = _dereq_('cross-storage');
+var _codemirror2 = _interopRequireDefault(_codemirror);
 
-var STORAGE_LAST_EDITOR_CONTENT = 'last-content';
+// // Cross storage for Openframe -- allows restricted access to certain localStorage operations
+// // on the openframe domain
+// import { CrossStorageClient } from "cross-storage";
+// import { getMode } from "codemirror";
 
-var EMPTY_FRAG_SHADER = '// Author:\n// Title:\n\n#ifdef GL_ES\nprecision mediump float;\n#endif\n\nuniform vec2 u_resolution;\nuniform vec2 u_mouse;\nuniform float u_time;\n\nvoid main() {\n    vec2 st = gl_FragCoord.xy/u_resolution.xy;\n    st.x *= u_resolution.x/u_resolution.y;\n\n    vec3 color = vec3(0.);\n    color = vec3(st.x,st.y,abs(sin(u_time)));\n\n    gl_FragColor = vec4(color,1.0);\n}';
+var STORAGE_LAST_EDITOR_CONTENT = "last-content";var EMPTY_FRAG_SHADER = "// Author:\n// Title:\n\n#ifdef GL_ES\nprecision mediump float;\n#endif\n\nuniform vec2 u_resolution;\nuniform vec2 u_mouse;\nuniform float u_time;\n\nvoid main() {\n    vec2 st = gl_FragCoord.xy/u_resolution.xy;\n    st.x *= u_resolution.x/u_resolution.y;\n\n    vec3 color = vec3(0.);\n    color = vec3(st.x,st.y,abs(sin(u_time)));\n\n    gl_FragColor = vec4(color,1.0);\n}";
 
 var GlslEditor = (function () {
-    function GlslEditor(selector, options) {
-        var _this = this;
+  function GlslEditor(selector, options) {
+    var _this = this;
 
-        _classCallCheck(this, GlslEditor);
+    _classCallCheck(this, GlslEditor);
 
-        this.createFontLink();
-        (0, _toolsMixin.subscribeMixin)(this);
+    this.createFontLink();
+    (0, _toolsMixin.subscribeMixin)(this);
 
-        if (typeof selector === 'object' && selector.nodeType && selector.nodeType === 1) {
-            this.container = selector;
-        } else if (typeof selector === 'string') {
-            this.container = document.querySelector(selector);
-            if (!this.container) {
-                throw new Error('element ' + selector + ' not present');
-            }
-        } else {
-            console.log('Error, type ' + typeof selector + ' of ' + selector + ' is unknown');
-            return;
-        }
-
-        this.options = {};
-        this.change = false;
-        this.autoupdate = true;
-
-        if (options) {
-            this.options = options;
-        }
-
-        if (this.options.imgs === undefined) {
-            this.options.imgs = [];
-        }
-
-        if (this.options.display_menu === undefined) {
-            this.options.display_menu = true;
-        }
-
-        if (this.container.hasAttribute('data-textures')) {
-            var imgList = this.container.getAttribute('data-textures').split(',');
-            for (var i in imgList) {
-                this.options.imgs.push(imgList[i]);
-            }
-        }
-
-        // Default Theme
-        if (!this.options.theme) {
-            this.options.theme = 'default';
-        }
-
-        // Default Context
-        if (!this.options.frag) {
-            var innerHTML = this.container.innerHTML.replace(/&lt;br&gt;/g, '');
-            innerHTML = innerHTML.replace(/<br>/g, '');
-            innerHTML = innerHTML.replace(/&nbsp;/g, '');
-            innerHTML = innerHTML.replace(/&lt;/g, '<');
-            innerHTML = innerHTML.replace(/&gt;/g, '>');
-            innerHTML = innerHTML.replace(/&amp;/g, '&');
-            this.options.frag = innerHTML || EMPTY_FRAG_SHADER;
-
-            if (innerHTML) {
-                this.container.innerHTML = '';
-            }
-        }
-
-        // Default invisible Fragment header
-        if (!this.options.frag_header) {
-            this.options.frag_header = '';
-        }
-
-        // Default invisible Fragment footer
-        if (!this.options.frag_footer) {
-            this.options.frag_footer = '';
-        }
-
-        // Listen to hash changes
-        if (this.options.watchHash) {
-            new _ioHashWatch2['default'](this);
-        }
-
-        // Load UI
-        if (this.options.menu) {
-            this.menu = new _uiMenu2['default'](this);
-        }
-
-        // Support for multiple buffers
-        if (this.options.multipleBuffers) {
-            this.bufferManager = new _ioBufferManager2['default'](this);
-        }
-
-        // Listen to file drops
-        if (this.options.fileDrops) {
-            new _ioFileDrop2['default'](this);
-        }
-
-        // CORE elements
-        this.shader = new _coreShader2['default'](this);
-        this.editor = (0, _coreEditor.initEditor)(this);
-
-        this.helpers = new _uiHelpers2['default'](this);
-        this.errorsDisplay = new _uiErrorsDisplay2['default'](this);
-        this.visualDebugger = new _uiVisualDebugger2['default'](this);
-
-        if (this.options.exportIcon) {
-            this['export'] = new _uiExportIcon2['default'](this);
-        }
-
-        // EVENTS
-        this.editor.on('change', function () {
-            if (_this.autoupdate) {
-                _this.update();
-            }
-        });
-
-        if (this.options.canvas_follow) {
-            this.shader.el.style.position = 'relative';
-            if (this.options.canvas_float) {
-                this.shader.el.style.float = this.options.canvas_float;
-            }
-            this.editor.on('cursorActivity', function (cm) {
-                var height = cm.heightAtLine(cm.getCursor().line + 1, 'local') - _this.shader.el.clientHeight;
-                if (height < 0) {
-                    height = 0.0;
-                }
-                _this.shader.el.style.top = height.toString() + 'px';
-            });
-        }
-
-        // If the user bails for whatever reason, hastily shove the contents of
-        // the editor into some kind of storage. This overwrites whatever was
-        // there before. Note that there is not really a way of handling unload
-        // with our own UI and logic, since this allows for widespread abuse
-        // of normal browser functionality.
-        window.addEventListener('beforeunload', function (event) {
-            var content = {};
-            if (_this.bufferManager && _Object$keys(_this.bufferManager.buffers).length !== 0) {
-                for (var key in _this.bufferManager.buffers) {
-                    content[key] = _this.bufferManager.buffers[key].getValue();
-                }
-            } else {
-                content[new Date().getTime().toString()] = _this.editor.getValue();
-            }
-
-            if (_this.options.menu) {
-                _ioLocalStorage2['default'].setItem(STORAGE_LAST_EDITOR_CONTENT, JSON.stringify(content));
-            }
-        });
-
-        if (this.options.menu) {
-            // If there is previus content load it.
-            var oldContent = JSON.parse(_ioLocalStorage2['default'].getItem(STORAGE_LAST_EDITOR_CONTENT));
-            if (oldContent) {
-                for (var key in oldContent) {
-                    this.open(oldContent[key], key);
-                }
-            } else {
-                this['new']();
-            }
-        } else {
-            this['new']();
-        }
-
-        if (this.options.menu || this.options.exportIcon) {
-            // setup CrossStorage client
-            this.storage = new _crossStorage.CrossStorageClient('https://openframe.io/hub.html');
-            this.storage.onConnect().then(function () {
-                console.log('Connected to OpenFrame [o]');
-            });
-            // }).bind(this);
-        }
-
-        return this;
+    if (typeof selector === "object" && selector.nodeType && selector.nodeType === 1) {
+      this.container = selector;
+    } else if (typeof selector === "string") {
+      this.container = document.querySelector(selector);
+      if (!this.container) {
+        throw new Error("element " + selector + " not present");
+      }
+    } else {
+      console.log("Error, type " + typeof selector + " of " + selector + " is unknown");
+      return;
     }
 
-    _createClass(GlslEditor, [{
-        key: 'new',
-        value: function _new() {
-            this.setContent(this.options.frag || EMPTY_FRAG_SHADER, new Date().getTime().toString());
-            this.trigger('new_content', {});
-            this.options.frag = null;
-        }
-    }, {
-        key: 'setContent',
-        value: function setContent(shader, tabName) {
-            // If the string is CODE
-            if (this.shader && this.shader.canvas) {
-                if (this.debugging) {
-                    this.debugging = false;
-                    (0, _coreEditor.focusAll)(this.editor);
-                }
-                this.shader.canvas.load(this.options.frag_header + shader + this.options.frag_footer);
-            }
+    this.options = {};
+    this.change = false;
+    this.autoupdate = true;
+    this.lygia_glob = null;
 
-            if (this.editor) {
-                if (tabName !== undefined && this.bufferManager !== undefined) {
-                    this.bufferManager.open(tabName, shader);
-                    this.bufferManager.select(tabName);
-                } else {
-                    this.editor.setValue(shader);
-                    this.editor.setSize(null, this.editor.getDoc().height + 'px');
-                    this.editor.setSize(null, 'auto');
-                    this.filename = tabName;
-                }
-            }
-            this.change = true;
-        }
-    }, {
-        key: 'open',
-        value: function open(shader, tabName) {
-            var _this2 = this;
+    if (options) this.options = options;
 
-            if (typeof shader === 'object') {
-                (function () {
-                    var reader = new FileReader();
-                    var ge = _this2;
-                    reader.onload = function (e) {
-                        ge.setContent(e.target.result, shader.name);
-                    };
-                    reader.readAsText(shader);
-                })();
-            } else if (typeof shader === 'string') {
-                if (/\.frag$/.test(shader) || /\.fs$/.test(shader)) {
-                    // If the string is an URL
-                    _xhr2['default'].get(shader, function (error, response, body) {
-                        if (error) {
-                            console.log('Error downloading ', shader, error);
-                            return;
-                        }
-                        _this2.setContent(body, tabName);
-                    });
-                } else {
-                    this.setContent(shader, tabName);
-                }
-            }
-        }
-    }, {
-        key: 'getContent',
-        value: function getContent() {
-            return this.editor.getValue();
-        }
-    }, {
-        key: 'getAuthor',
-        value: function getAuthor() {
-            var content = this.getContent();
-            var result = content.match(/\/\/\s*[A|a]uthor\s*[\:]?\s*([\w|\s|\@|\(|\)|\-|\_]*)/i);
-            if (result && !(result[1] === ' ' || result[1] === '')) {
-                var author = result[1].replace(/(\r\n|\n|\r)/gm, '');
-                return author;
-            } else {
-                return 'unknown';
-            }
-        }
-    }, {
-        key: 'getTitle',
-        value: function getTitle() {
-            var content = this.getContent();
-            var result = content.match(/\/\/\s*[T|t]itle\s*:\s*([\w|\s|\@|\(|\)|\-|\_]*)/i);
-            if (result && !(result[1] === ' ' || result[1] === '')) {
-                var title = result[1].replace(/(\r\n|\n|\r)/gm, '');
-                return title;
-            } else if (this.bufferManager !== undefined) {
-                return this.bufferManager.current;
-            } else {
-                return 'unknown';
-            }
-        }
+    if (this.options.imgs === undefined) this.options.imgs = [];
 
-        // Returns Promise
-    }, {
-        key: 'getOfToken',
-        value: function getOfToken() {
-            return this.storage.get('accessToken');
-        }
-    }, {
-        key: 'download',
-        value: function download() {
-            var content = this.getContent();
-            var name = this.getTitle();
-            if (name !== '') {
-                name += '-';
-            }
-            name += new Date().getTime();
+    if (this.options.display_menu === undefined) this.options.display_menu = true;
 
-            // Download code
-            var blob = new Blob([content], { type: 'text/plain' });
-            (0, _vendorFileSaverMinJs.saveAs)(blob, name + '.frag');
-            this.editor.doc.markClean();
-            this.change = false;
-        }
-    }, {
-        key: 'update',
-        value: function update() {
-            if (this.debugging) {
-                this.debugging = false;
-                (0, _coreEditor.focusAll)(this.editor);
-            }
+    if (this.container.hasAttribute("data-textures")) {
+      var imgList = this.container.getAttribute("data-textures").split(",");
+      for (var i in imgList) {
+        this.options.imgs.push(imgList[i]);
+      }
+    }
 
-            if (this.visualDebugger.testingResults.length) {
-                this.visualDebugger.clean();
-            }
-            this.shader.canvas.load(this.options.frag_header + this.editor.getValue() + this.options.frag_footer);
-        }
-    }, {
-        key: 'createFontLink',
-        value: function createFontLink() {
-            var head = document.getElementsByTagName('head')[0];
-            var link = document.createElement('link');
-            link.href = 'https://fonts.googleapis.com/icon?family=Material+Icons';
-            link.type = 'text/css';
-            link.rel = 'stylesheet';
-            link.media = 'screen,print';
-            head.appendChild(link);
-            document.getElementsByTagName('head')[0].appendChild(link);
-        }
-    }, {
-        key: 'togglePresentationWindow',
-        value: function togglePresentationWindow(flag) {
-            this.pWindowOpen = flag;
-            if (flag) {
-                this.shader.openWindow();
-            } else {
-                this.shader.closeWindow();
-            }
-        }
-    }, {
-        key: 'onClosePresentationWindow',
-        value: function onClosePresentationWindow() {
-            this.pWindowOpen = false;
-        }
-    }]);
+    // Default Theme
+    if (!this.options.theme) this.options.theme = "default";
 
-    return GlslEditor;
+    // Default Context
+    if (!this.options.frag) {
+      var innerHTML = this.container.innerHTML.replace(/&lt;br&gt;/g, "");
+      innerHTML = innerHTML.replace(/<br>/g, "");
+      innerHTML = innerHTML.replace(/&nbsp;/g, "");
+      innerHTML = innerHTML.replace(/&lt;/g, "<");
+      innerHTML = innerHTML.replace(/&gt;/g, ">");
+      innerHTML = innerHTML.replace(/&amp;/g, "&");
+      this.options.frag = innerHTML || EMPTY_FRAG_SHADER;
+
+      if (innerHTML) this.container.innerHTML = "";
+    }
+
+    // Default invisible Fragment header
+    if (!this.options.frag_header) this.options.frag_header = "";
+
+    // Default invisible Fragment footer
+    if (!this.options.frag_footer) this.options.frag_footer = "";
+
+    // Listen to hash changes
+    if (this.options.watchHash) new _ioHashWatch2["default"](this);
+
+    // Load UI
+    if (this.options.menu) this.menu = new _uiMenu2["default"](this);
+
+    // Support for multiple buffers
+    if (this.options.multipleBuffers) this.bufferManager = new _ioBufferManager2["default"](this);
+
+    // Listen to file drops
+    if (this.options.fileDrops) new _ioFileDrop2["default"](this);
+
+    if (this.options.indentUnit === undefined) this.options.indentUnit = 4;
+
+    if (this.options.tabSize === undefined) this.options.tabSize = 4;
+
+    if (this.options.indentWithTabs === undefined) this.options.indentWithTabs = false;
+
+    if (this.options.lineWrapping === undefined) this.options.lineWrapping = true;
+
+    if (this.options.autofocus === undefined) this.options.autofocus = true;
+
+    // CORE elements
+    this.shader = new _coreShader2["default"](this);
+    this.editor = (0, _coreEditor.initEditor)(this);
+
+    this.helpers = new _uiHelpers2["default"](this);
+    this.errorsDisplay = new _uiErrorsDisplay2["default"](this);
+    this.visualDebugger = new _uiVisualDebugger2["default"](this);
+
+    if (this.options.exportIcon) this["export"] = new _uiExportIcon2["default"](this);
+
+    // EVENTS
+    this.editor.on("change", function () {
+      if (_this.autoupdate) {
+        _this.update();
+      }
+    });
+
+    if (this.options.canvas_follow) {
+      this.shader.el.style.position = "relative";
+
+      if (this.options.canvas_float) this.shader.el.style.float = this.options.canvas_float;
+
+      this.editor.on("cursorActivity", function (cm) {
+        var height = cm.heightAtLine(cm.getCursor().line + 1, "local") - _this.shader.el.clientHeight;
+        if (height < 0) {
+          height = 0.0;
+        }
+        _this.shader.el.style.top = height.toString() + "px";
+      });
+    }
+
+    this.editor.on('inputRead', function (cm, change) {
+      var cur = cm.getCursor(),
+          token = cm.getTokenAt(cur);
+      var line = token.string.trim();
+
+      if (line.startsWith('#include')) {
+        (function () {
+          var path = line.substring(10);
+          if (_this.lygia_glob === null) {
+            (0, _toolsCommon.getJSON)('https://lygia.xyz/glsl.json', function (err, data) {
+              if (err === null) {
+                _this.lygia_glob = data;
+              }
+            });
+          }
+          console.log('autocomplete for', path);
+
+          var start = token.start;
+          var end = cur.ch;
+          var lineN = cur.line;
+
+          var result = [];
+
+          if (_this.lygia_glob !== null) {
+            _this.lygia_glob.forEach(function (w) {
+              if (w.startsWith(path)) result.push('#include \"' + w + '\"');
+            });
+            result.sort();
+          }
+
+          if (result.length > 0) {
+            _codemirror2["default"].showHint(cm, function () {
+              var rta = {
+                list: result,
+                from: _codemirror2["default"].Pos(lineN, start),
+                to: _codemirror2["default"].Pos(lineN, end)
+              };
+
+              console.log(rta);
+              return rta;
+            }, { completeSingle: true, alignWithWord: true });
+          }
+        })();
+      }
+    });
+
+    // If the user bails for whatever reason, hastily shove the contents of
+    // the editor into some kind of storage. This overwrites whatever was
+    // there before. Note that there is not really a way of handling unload
+    // with our own UI and logic, since this allows for widespread abuse
+    // of normal browser functionality.
+    window.addEventListener("beforeunload", function (event) {
+      var content = {};
+      if (_this.bufferManager && _Object$keys(_this.bufferManager.buffers).length !== 0) {
+        for (var key in _this.bufferManager.buffers) {
+          content[key] = _this.bufferManager.buffers[key].getValue();
+        }
+      } else {
+        content[new Date().getTime().toString()] = _this.editor.getValue();
+      }
+
+      if (_this.options.menu) {
+        _ioLocalStorage2["default"].setItem(STORAGE_LAST_EDITOR_CONTENT, JSON.stringify(content));
+      }
+    });
+
+    if (this.options.menu) {
+      // If there is previus content load it.
+      var oldContent = JSON.parse(_ioLocalStorage2["default"].getItem(STORAGE_LAST_EDITOR_CONTENT));
+      if (oldContent) {
+        for (var key in oldContent) {
+          this.open(oldContent[key], key);
+        }
+      } else {
+        this["new"]();
+      }
+    } else {
+      this["new"]();
+    }
+
+    // if (this.options.menu || this.options.exportIcon) {
+    //   // setup CrossStorage client
+    //   this.storage = new CrossStorageClient("https://openframe.io/hub.html");
+    //   this.storage.onConnect().then(() => {
+    //     console.log("Connected to OpenFrame [o]");
+    //   });
+    //   // }).bind(this);
+    // }
+
+    return this;
+  }
+
+  _createClass(GlslEditor, [{
+    key: "new",
+    value: function _new() {
+      this.setContent(this.options.frag || EMPTY_FRAG_SHADER, new Date().getTime().toString());
+      this.trigger("new_content", {});
+      this.options.frag = null;
+    }
+  }, {
+    key: "setContent",
+    value: function setContent(shader, tabName) {
+      // If the string is CODE
+      if (this.shader && this.shader.canvas) {
+        if (this.debugging) {
+          this.debugging = false;
+          (0, _coreEditor.focusAll)(this.editor);
+        }
+        this.shader.canvas.load(this.options.frag_header + shader + this.options.frag_footer);
+      }
+
+      if (this.editor) {
+        if (tabName !== undefined && this.bufferManager !== undefined) {
+          this.bufferManager.open(tabName, shader);
+          this.bufferManager.select(tabName);
+        } else {
+          this.editor.setValue(shader);
+          this.editor.setSize(null, this.editor.getDoc().height + "px");
+          this.editor.setSize(null, "auto");
+          this.filename = tabName;
+        }
+      }
+      this.change = true;
+    }
+  }, {
+    key: "open",
+    value: function open(shader, tabName) {
+      var _this2 = this;
+
+      if (typeof shader === "object") {
+        (function () {
+          var reader = new FileReader();
+          var ge = _this2;
+          reader.onload = function (e) {
+            ge.setContent(e.target.result, shader.name);
+          };
+          reader.readAsText(shader);
+        })();
+      } else if (typeof shader === "string") {
+        if (/\.frag$/.test(shader) || /\.fs$/.test(shader)) {
+          // If the string is an URL
+          _xhr2["default"].get(shader, function (error, response, body) {
+            if (error) {
+              console.log("Error downloading ", shader, error);
+              return;
+            }
+            _this2.setContent(body, tabName);
+          });
+        } else {
+          this.setContent(shader, tabName);
+        }
+      }
+    }
+  }, {
+    key: "getContent",
+    value: function getContent() {
+      return this.editor.getValue();
+    }
+  }, {
+    key: "getAuthor",
+    value: function getAuthor() {
+      var content = this.getContent();
+      var result = content.match(/\/\/\s*[A|a]uthor\s*[\:]?\s*([\w|\s|\@|\(|\)|\-|\_]*)/i);
+      if (result && !(result[1] === " " || result[1] === "")) {
+        var author = result[1].replace(/(\r\n|\n|\r)/gm, "");
+        return author;
+      } else {
+        return "unknown";
+      }
+    }
+  }, {
+    key: "getTitle",
+    value: function getTitle() {
+      var content = this.getContent();
+      var result = content.match(/\/\/\s*[T|t]itle\s*:\s*([\w|\s|\@|\(|\)|\-|\_]*)/i);
+      if (result && !(result[1] === " " || result[1] === "")) {
+        var title = result[1].replace(/(\r\n|\n|\r)/gm, "");
+        return title;
+      } else if (this.bufferManager !== undefined) {
+        return this.bufferManager.current;
+      } else {
+        return "unknown";
+      }
+    }
+
+    // Returns Promise
+  }, {
+    key: "getOfToken",
+    value: function getOfToken() {
+      return this.storage.get("accessToken");
+    }
+  }, {
+    key: "download",
+    value: function download() {
+      var content = this.getContent();
+      var name = this.getTitle();
+      if (name !== "") {
+        name += "-";
+      }
+      name += new Date().getTime();
+
+      // Download code
+      var blob = new Blob([content], { type: "text/plain" });
+      (0, _toolsDownload.saveAs)(blob, name + ".frag");
+      this.editor.doc.markClean();
+      this.change = false;
+    }
+  }, {
+    key: "update",
+    value: function update() {
+      if (this.debugging) {
+        this.debugging = false;
+        (0, _coreEditor.focusAll)(this.editor);
+      }
+
+      if (this.visualDebugger.testingResults.length) this.visualDebugger.clean();
+
+      this.shader.canvas.load(this.options.frag_header + this.editor.getValue() + this.options.frag_footer);
+    }
+  }, {
+    key: "createFontLink",
+    value: function createFontLink() {
+      var head = document.getElementsByTagName("head")[0];
+      var link = document.createElement("link");
+      link.href = "https://fonts.googleapis.com/icon?family=Material+Icons";
+      link.type = "text/css";
+      link.rel = "stylesheet";
+      link.media = "screen,print";
+      head.appendChild(link);
+      document.getElementsByTagName("head")[0].appendChild(link);
+    }
+  }, {
+    key: "togglePresentationWindow",
+    value: function togglePresentationWindow(flag) {
+      this.pWindowOpen = flag;
+      if (flag) this.shader.openWindow();else this.shader.closeWindow();
+    }
+  }, {
+    key: "onClosePresentationWindow",
+    value: function onClosePresentationWindow() {
+      this.pWindowOpen = false;
+    }
+  }]);
+
+  return GlslEditor;
 })();
 
-exports['default'] = GlslEditor;
+exports["default"] = GlslEditor;
 
 window.GlslEditor = GlslEditor;
 
 var GlslWebComponent = function GlslWebComponent() {};
 GlslWebComponent.prototype = _Object$create(HTMLElement.prototype);
 GlslWebComponent.prototype.createdCallback = function createdCallback() {
-    var options = {
-        canvas_size: 150,
-        canvas_follow: true,
-        tooltips: true
-    };
+  var options = {
+    canvas_size: 150,
+    canvas_follow: true,
+    tooltips: true
+  };
 
-    for (var i = 0; i < this.attributes.length; i++) {
-        var attribute = this.attributes[i];
-        if (attribute.specified) {
-            var value = attribute.value;
+  for (var i = 0; i < this.attributes.length; i++) {
+    var attribute = this.attributes[i];
+    if (attribute.specified) {
+      var value = attribute.value;
 
-            if (value === 'true') {
-                value = true;
-            } else if (value === 'false') {
-                value = false;
-            } else if (parseInt(value)) {
-                value = parseInt(value);
-            }
+      if (value === "true") value = true;else if (value === "false") value = false;else if (parseInt(value)) value = parseInt(value);
 
-            options[attribute.name] = value;
-        }
+      options[attribute.name] = value;
     }
+  }
 
-    this.glslEditor = new GlslEditor(this, options);
+  this.glslEditor = new GlslEditor(this, options);
 };
 
-document.registerElement('glsl-editor', GlslWebComponent);
-module.exports = exports['default'];
+document.registerElement("glsl-editor", GlslWebComponent);
+module.exports = exports["default"];
 
-},{"./core/Editor":121,"./core/Shader":122,"./io/BufferManager":123,"./io/FileDrop":124,"./io/HashWatch":125,"./io/LocalStorage":126,"./tools/mixin":132,"./ui/ErrorsDisplay":134,"./ui/ExportIcon":135,"./ui/Helpers":136,"./ui/Menu":137,"./ui/VisualDebugger":139,"./vendor/FileSaver.min.js":152,"babel-runtime/core-js/object/create":3,"babel-runtime/core-js/object/keys":6,"babel-runtime/helpers/class-call-check":10,"babel-runtime/helpers/create-class":11,"babel-runtime/helpers/interop-require-default":14,"cross-storage":109,"document-register-element":110,"xhr":118}],121:[function(_dereq_,module,exports){
+},{"./core/Editor":115,"./core/Shader":116,"./io/BufferManager":117,"./io/FileDrop":118,"./io/HashWatch":119,"./io/LocalStorage":120,"./tools/common":121,"./tools/download":123,"./tools/mixin":126,"./ui/ErrorsDisplay":128,"./ui/ExportIcon":129,"./ui/Helpers":130,"./ui/Menu":131,"./ui/VisualDebugger":133,"babel-runtime/core-js/object/create":3,"babel-runtime/core-js/object/keys":6,"babel-runtime/helpers/class-call-check":10,"babel-runtime/helpers/create-class":11,"babel-runtime/helpers/interop-require-default":14,"codemirror":30,"document-register-element":107,"xhr":112}],115:[function(_dereq_,module,exports){
 // Import CodeMirror
 'use strict';
+
+var _Promise = _dereq_('babel-runtime/core-js/promise')['default'];
 
 var _interopRequireDefault = _dereq_('babel-runtime/helpers/interop-require-default')['default'];
 
@@ -17808,6 +18496,8 @@ _dereq_('codemirror/addon/display/rulers');
 
 _dereq_('codemirror/addon/display/panel');
 
+_dereq_('codemirror/addon/hint/show-hint');
+
 _dereq_('codemirror/mode/clike/clike.js');
 
 // Keymap
@@ -17817,20 +18507,67 @@ _dereq_('codemirror/keymap/sublime');
 var UNFOCUS_CLASS = 'ge_editor-unfocus';
 
 function initEditor(main) {
-    if (main.options.lineNumbers === undefined) {
-        main.options.lineNumbers = true;
-    }
+    if (main.options.lineNumbers === undefined) main.options.lineNumbers = true;
 
     // CREATE AND START CODEMIRROR
     var el = document.createElement('div');
     el.setAttribute('class', 'ge_editor');
 
     // If there is a menu offset the editor to come after it
-    if (main.menu) {
-        el.style.paddingTop = (main.menu.el.clientHeight || main.menu.el.offsetHeight || main.menu.el.scrollHeight) + 'px';
-    }
+    if (main.menu) el.style.paddingTop = (main.menu.el.clientHeight || main.menu.el.offsetHeight || main.menu.el.scrollHeight) + 'px';
 
     main.container.appendChild(el);
+
+    function fillInclude(cm, option) {
+        var _this = this;
+
+        return new _Promise(function (accept) {
+            setTimeout(function () {
+                var cur = cm.getCursor().line = cm.getLine(cur.line).trim();
+                var start = cur.ch,
+                    end = cur.ch;
+
+                if (line.startsWith('#include \"lygia')) {
+                    var _ret = (function () {
+                        var path = line.substring(10);
+                        if (_this.lygia_glob === null) {
+                            getJSON('https://lygia.xyz/glsl.json', function (err, data) {
+                                if (err === null) {
+                                    _this.lygia_glob = data;
+                                }
+                            });
+                        }
+                        console.log('autocomplete for', path);
+
+                        var start = token.start;
+                        var end = cur.ch;
+                        var lineN = cur.line;
+
+                        var result = [];
+
+                        if (_this.lygia_glob !== null) {
+                            _this.lygia_glob.forEach(function (w) {
+                                if (w.startsWith(path)) result.push('#include \"' + w + '\"');
+                            });
+                            result.sort();
+                        }
+
+                        if (result.length > 0) {
+                            console.log(lineN, result);
+                            return {
+                                v: accept({ list: result,
+                                    from: _codemirror2['default'].Pos(cur.line, start),
+                                    to: _codemirror2['default'].Pos(cur.line, end) })
+                            };
+                        }
+                    })();
+
+                    if (typeof _ret === 'object') return _ret.v;
+                }
+                return accept(null);
+            }, 100);
+        });
+    }
 
     var cm = (0, _codemirror2['default'])(el, {
         value: main.options.frag,
@@ -17844,11 +18581,14 @@ function initEditor(main) {
         showCursorWhenSelecting: true,
         theme: main.options.theme,
         dragDrop: false,
-        indentUnit: 4,
+        indentUnit: main.options.indentUnit,
+        tabSize: main.options.tabSize,
+        indentWithTabs: main.options.indentWithTabs,
         gutters: main.options.lineNumbers ? ['CodeMirror-linenumbers', 'breakpoints'] : false,
-        lineWrapping: true,
-        autofocus: true
+        lineWrapping: main.options.lineWrapping,
+        autofocus: main.options.autofocus
     });
+
     return cm;
 }
 
@@ -17880,328 +18620,333 @@ function focusAll(cm) {
     }
 }
 
-},{"babel-runtime/helpers/interop-require-default":14,"codemirror":30,"codemirror/addon/comment/comment":15,"codemirror/addon/dialog/dialog":16,"codemirror/addon/display/panel":17,"codemirror/addon/display/rulers":18,"codemirror/addon/edit/closebrackets":19,"codemirror/addon/edit/matchbrackets":20,"codemirror/addon/fold/foldcode":21,"codemirror/addon/fold/foldgutter":22,"codemirror/addon/fold/indent-fold":23,"codemirror/addon/hint/javascript-hint":24,"codemirror/addon/hint/show-hint":25,"codemirror/addon/search/search":26,"codemirror/addon/search/searchcursor":27,"codemirror/addon/wrap/hardwrap":28,"codemirror/keymap/sublime":29,"codemirror/mode/clike/clike.js":31}],122:[function(_dereq_,module,exports){
-'use strict';
+},{"babel-runtime/core-js/promise":8,"babel-runtime/helpers/interop-require-default":14,"codemirror":30,"codemirror/addon/comment/comment":15,"codemirror/addon/dialog/dialog":16,"codemirror/addon/display/panel":17,"codemirror/addon/display/rulers":18,"codemirror/addon/edit/closebrackets":19,"codemirror/addon/edit/matchbrackets":20,"codemirror/addon/fold/foldcode":21,"codemirror/addon/fold/foldgutter":22,"codemirror/addon/fold/indent-fold":23,"codemirror/addon/hint/javascript-hint":24,"codemirror/addon/hint/show-hint":25,"codemirror/addon/search/search":26,"codemirror/addon/search/searchcursor":27,"codemirror/addon/wrap/hardwrap":28,"codemirror/keymap/sublime":29,"codemirror/mode/clike/clike.js":31}],116:[function(_dereq_,module,exports){
+"use strict";
 
-var _createClass = _dereq_('babel-runtime/helpers/create-class')['default'];
+var _createClass = _dereq_("babel-runtime/helpers/create-class")["default"];
 
-var _classCallCheck = _dereq_('babel-runtime/helpers/class-call-check')['default'];
+var _classCallCheck = _dereq_("babel-runtime/helpers/class-call-check")["default"];
 
-var _interopRequireDefault = _dereq_('babel-runtime/helpers/interop-require-default')['default'];
+var _interopRequireDefault = _dereq_("babel-runtime/helpers/interop-require-default")["default"];
 
-Object.defineProperty(exports, '__esModule', {
-    value: true
+Object.defineProperty(exports, "__esModule", {
+  value: true
 });
 
-var _glslCanvas = _dereq_('glslCanvas');
+var _glslCanvas = _dereq_("glslCanvas");
 
 var _glslCanvas2 = _interopRequireDefault(_glslCanvas);
 
-var _toolsInteractiveDom = _dereq_('../tools/interactiveDom');
+var _toolsInteractiveDom = _dereq_("../tools/interactiveDom");
 
-var _toolsMediaCapture = _dereq_('../tools/mediaCapture');
+var _toolsMediaCapture = _dereq_("../tools/mediaCapture");
 
 var _toolsMediaCapture2 = _interopRequireDefault(_toolsMediaCapture);
 
-var _uiMenuItem = _dereq_('../ui/MenuItem');
+var _uiMenuItem = _dereq_("../ui/MenuItem");
 
 var _uiMenuItem2 = _interopRequireDefault(_uiMenuItem);
 
-// 3er Parties
+var _toolsDownload = _dereq_("../tools/download");
 
-var _vendorFileSaverMinJs = _dereq_('../vendor/FileSaver.min.js');
-
-var CONTROLS_CLASSNAME = 'ge_control';
-var CONTROLS_PANEL_CLASSNAME = 'ge_control_panel';
+var CONTROLS_CLASSNAME = "ge_control";
+var CONTROLS_PANEL_CLASSNAME = "ge_control_panel";
 
 var Shader = (function () {
-    function Shader(main) {
-        var _this = this;
+  function Shader(main) {
+    var _this = this;
 
-        _classCallCheck(this, Shader);
+    _classCallCheck(this, Shader);
 
-        this.main = main;
-        this.options = main.options;
-        this.frag = '';
+    this.main = main;
+    this.options = main.options;
+    this.frag = "";
 
-        // DOM CONTAINER
-        this.el = document.createElement('div');
-        this.el.setAttribute('class', 'ge_canvas_container');
-        // CREATE AND START GLSLCANVAS
-        this.elCanvas = document.createElement('canvas');
-        this.elCanvas.setAttribute('class', 'ge_canvas');
-        this.elCanvas.setAttribute('data-fragment', this.options.frag_header + this.options.frag + this.options.frag_footer);
-        this.el.appendChild(this.elCanvas);
-        var glslcanvas = new _glslCanvas2['default'](this.elCanvas, { premultipliedAlpha: false, preserveDrawingBuffer: true, backgroundColor: 'rgba(1,1,1,1)' });
+    // DOM CONTAINER
+    this.el = document.createElement("div");
+    this.el.setAttribute("class", "ge_canvas_container");
+    // CREATE AND START GLSLCANVAS
+    this.elCanvas = document.createElement("canvas");
+    this.elCanvas.setAttribute("class", "ge_canvas");
+    this.elCanvas.setAttribute("data-fragment", this.options.frag_header + this.options.frag + this.options.frag_footer);
+    this.el.appendChild(this.elCanvas);
+    var glslcanvas = new _glslCanvas2["default"](this.elCanvas, {
+      premultipliedAlpha: false,
+      preserveDrawingBuffer: true,
+      backgroundColor: "rgba(1,1,1,1)"
+    });
 
-        var width = this.options.canvas_width || this.options.canvas_size || '250';
-        var height = this.options.canvas_height || this.options.canvas_size || '250';
-        glslcanvas.canvas.style.width = width + 'px';
-        glslcanvas.canvas.style.height = height + 'px';
-        glslcanvas.resize();
+    var width = this.options.canvas_width || this.options.canvas_size || "250";
+    var height = this.options.canvas_height || this.options.canvas_size || "250";
+    glslcanvas.canvas.style.width = width + "px";
+    glslcanvas.canvas.style.height = height + "px";
+    glslcanvas.resize();
 
-        this.canvas = glslcanvas;
+    this.canvas = glslcanvas;
 
-        if (this.options.imgs && this.options.imgs.length > 0) {
-            for (var i in this.options.imgs) {
-                this.canvas.setUniform('u_tex' + i, this.options.imgs[i]);
-            }
-        }
-
-        // Media Capture
-        this.mediaCapture = new _toolsMediaCapture2['default']();
-        this.mediaCapture.setCanvas(this.elCanvas);
-        this.canvas.on('render', function () {
-            _this.mediaCapture.completeScreenshot();
-        });
-
-        if (main.options.displayMenu) {
-            // CONTROLS
-            this.controlsContainer = document.createElement('ul');
-            this.controlsContainer.className = CONTROLS_CLASSNAME;
-            this.controlPanel = document.createElement('ul');
-            this.controlPanel.className = CONTROLS_PANEL_CLASSNAME;
-            this.controlsContainer.appendChild(this.controlPanel);
-            this.el.appendChild(this.controlsContainer);
-            this.controls = {};
-            // play/stop
-            // this.controls.playPause = new MenuItem(this.controlPanel, 'ge_control_element', '<i class="material-icons">pause</i>', (event) => {
-            this.controls.playPause = new _uiMenuItem2['default'](this.controlPanel, 'ge_control_element', '<i class="material-icons">pause</i>', function (event) {
-                event.stopPropagation();
-                event.preventDefault();
-                if (glslcanvas.paused) {
-                    glslcanvas.play();
-                    // this.controls.playPause.name = '<i class="material-icons">pause</i>';//'Pause';
-                    _this.controls.playPause.name = '<i class="material-icons">pause</i>'; //'Pause';
-                } else {
-                        glslcanvas.pause();
-                        _this.controls.playPause.name = '<i class="material-icons">play_arrow</i>'; //'Play';
-                    }
-            });
-            // rec
-            this.isCapturing = false;
-            // let rec = new MenuItem(this.controlPanel, 'ge_control_element', '<i class="material-icons">fiber_manual_record</i>', (event) => {
-            var rec = new _uiMenuItem2['default'](this.controlPanel, 'ge_control_element', '<i class="material-icons">&#xE061;</i>', function (event) {
-                event.stopPropagation();
-                event.preventDefault();
-                if (_this.isCapturing) {
-                    _this.stopVideoCapture();
-                } else {
-                    _this.startVideoCapture();
-                }
-            });
-            this.controls.rec = rec;
-            this.controls.rec.button.style.color = 'red';
-
-            // present mode (only if there is a presentation.html file to point to)
-            // this.controls.presentationMode = new MenuItem(this.controlPanel, 'ge_control_element', '<i class="material-icons">open_in_new</i>', (event) => {
-            this.controls.presentationMode = new _uiMenuItem2['default'](this.controlPanel, 'ge_control_element', '<i class="material-icons">open_in_new</i>', function (event) {
-                event.stopPropagation();
-                event.preventDefault();
-                if (main.pWindowOpen) {
-                    main.togglePresentationWindow(false);
-                } else {
-                    main.togglePresentationWindow(true);
-                }
-            });
-
-            this.elControl = this.el.getElementsByClassName(CONTROLS_CLASSNAME)[0];
-            this.elControl.addEventListener('mouseenter', function (event) {
-                _this.showControls();
-            });
-            this.elControl.addEventListener('mouseleave', function (event) {
-                _this.hideControls();
-            });
-            this.elCanvas.addEventListener('mousemove', function (event) {
-                if (event.offsetY > _this.elCanvas.clientHeight * .66) {
-                    _this.showControls();
-                } else {
-                    _this.hideControls();
-                }
-            });
-            this.hideControls();
-        }
-
-        // ========== EVENTS
-        // Draggable/resizable/snappable
-        if (main.options.canvas_draggable || main.options.canvas_resizable || main.options.canvas_snapable) {
-            (0, _toolsInteractiveDom.subscribeInteractiveDom)(this.el, {
-                move: main.options.canvas_draggable,
-                resize: main.options.canvas_resizable,
-                snap: main.options.canvas_snapable
-            });
-
-            if (main.options.canvas_size === 'halfscreen') {
-                this.el.snapRight();
-            }
-
-            this.el.on('move', function (event) {
-                event.el.style.width = event.el.clientWidth + 'px';
-                event.el.style.height = event.el.clientHeight + 'px';
-            });
-            this.el.on('resize', function (event) {
-                glslcanvas.canvas.style.width = event.el.clientWidth + 'px';
-                glslcanvas.canvas.style.height = event.el.clientHeight + 'px';
-                glslcanvas.resize();
-            });
-        }
-
-        // If there is a menu offset the editor to come after it
-        if (main.menu) {
-            this.el.style.top = (main.menu.el.clientHeight || main.menu.el.offsetHeight || main.menu.el.scrollHeight) + 'px';
-        }
-
-        // Add all this to the main container
-        main.container.appendChild(this.el);
-        glslcanvas.resize();
+    if (this.options.imgs && this.options.imgs.length > 0) {
+      for (var i in this.options.imgs) {
+        this.canvas.setUniform("u_tex" + i, this.options.imgs[i]);
+      }
     }
 
-    _createClass(Shader, [{
-        key: 'hideControls',
-        value: function hideControls() {
-            if (this.elControl && this.elControl.className === CONTROLS_CLASSNAME) {
-                this.elControl.className = CONTROLS_CLASSNAME + ' ' + CONTROLS_CLASSNAME + '_hidden';
-            }
-        }
-    }, {
-        key: 'showControls',
-        value: function showControls() {
-            if (this.elControl && this.elControl.className === CONTROLS_CLASSNAME + ' ' + CONTROLS_CLASSNAME + '_hidden') {
-                this.elControl.className = CONTROLS_CLASSNAME;
-            }
-        }
-    }, {
-        key: 'requestRedraw',
-        value: function requestRedraw() {
-            this.canvas.forceRender = true;
-            this.canvas.render();
-        }
-    }, {
-        key: 'screenshot',
-        value: function screenshot() {
-            this.requestRedraw();
-            return this.mediaCapture.screenshot();
-        }
-    }, {
-        key: 'startVideoCapture',
-        value: function startVideoCapture() {
-            this.requestRedraw();
-            if (this.mediaCapture.startVideoCapture()) {
-                this.isCapturing = true;
-                this.controls.rec.button.style.color = 'white';
-                // this.controls.rec.name = '<i class="material-icons">stop</i>';
-                this.controls.rec.name = '<i class="material-icons">&#xE061;</i>';
-            }
-        }
-    }, {
-        key: 'stopVideoCapture',
-        value: function stopVideoCapture() {
-            if (this.isCapturing) {
-                this.isCapturing = false;
-                this.controls.rec.button.style.color = 'red';
-                // this.controls.rec.name = '<i class="material-icons">fiber_manual_record</i>';
-                this.controls.rec.name = '<i class="material-icons">stop</i>';
-                this.mediaCapture.stopVideoCapture().then(function (video) {
-                    (0, _vendorFileSaverMinJs.saveAs)(video.blob, Number(new Date()) + '.webm');
-                });
-            }
-        }
-    }, {
-        key: 'openWindow',
-        value: function openWindow() {
-            this.originalSize = { width: this.canvas.canvas.clientWidth, height: this.canvas.canvas.clientHeight };
-            this.presentationWindow = window.open('', '_blank', 'presentationWindow');
-            this.setUpPresentationWindow();
-        }
-    }, {
-        key: 'closeWindow',
-        value: function closeWindow() {
-            if (this.presentationWindow) {
-                this.presentationWindow.close();
-            }
-        }
-    }, {
-        key: 'setCanvasSize',
-        value: function setCanvasSize(w, h) {
-            this.canvas.canvas.style.width = w + 'px';
-            this.canvas.canvas.style.height = h + 'px';
-        }
-    }, {
-        key: 'setUpPresentationWindow',
-        value: function setUpPresentationWindow() {
-            this.presentationWindow.document.body.appendChild(this.canvas.canvas);
-            var d = this.presentationWindow.document;
-            var div = d.createElement('div');
-            div.appendChild(d.createTextNode('Projector mode'));
-            var span = this.presentationWindow.document.createElement('span');
-            div.appendChild(span);
-            span.appendChild(d.createTextNode(" - If the canvas doesn't update, drag this window and reveal the editor"));
-            d.body.appendChild(div);
+    // Media Capture
+    this.mediaCapture = new _toolsMediaCapture2["default"]();
+    this.mediaCapture.setCanvas(this.elCanvas);
+    this.canvas.on("render", function () {
+      _this.mediaCapture.completeScreenshot();
+    });
 
-            d.title = 'GLSL Editor';
-            d.body.style.padding = '0';
-            d.body.style.margin = '0';
-            d.body.style.background = '#171e22';
-            d.body.style.overflow = 'hidden';
-
-            div.style.position = 'absolute';
-            div.style.width = '100%';
-            div.style.background = 'rgba(0, 0, 0, 0.5)';
-            div.style.position = 'absolute';
-            div.style.top = '0';
-            div.style.left = '0';
-            div.style.right = '0';
-            div.style.padding = '16px';
-            div.style.color = '#ffffff';
-            div.style.fontSize = '14px';
-            div.style.fontFamily = 'Helvetica, Geneva, sans-serif';
-            div.style.fontWeight = '400';
-            div.style.letterSpacing = '0.1em';
-            div.style.textAlign = 'center';
-            div.style.opacity = '1';
-            div.style.zIndex = '9999';
-            div.style.setProperty('-webkit-transition', 'opacity 1.5s');
-            div.style.setProperty('-moz-transition', 'opacity 1.5s');
-            div.style.setProperty('transition', 'opacity 1.5s');
-
-            span.style.color = 'rgba(255, 255, 255, 0.5)';
-
-            setTimeout(function () {
-                div.style.opacity = 0;
-            }, 4000);
-
-            this.setCanvasSize(this.presentationWindow.innerWidth, this.presentationWindow.innerHeight);
-            this.presentationWindow.addEventListener('resize', this.onPresentationWindowResize.bind(this));
-            this.presentationWindow.addEventListener('unload', this.onPresentationWindowClose.bind(this));
+    if (main.options.displayMenu) {
+      // CONTROLS
+      this.controlsContainer = document.createElement("ul");
+      this.controlsContainer.className = CONTROLS_CLASSNAME;
+      this.controlPanel = document.createElement("ul");
+      this.controlPanel.className = CONTROLS_PANEL_CLASSNAME;
+      this.controlsContainer.appendChild(this.controlPanel);
+      this.el.appendChild(this.controlsContainer);
+      this.controls = {};
+      // play/stop
+      // this.controls.playPause = new MenuItem(this.controlPanel, 'ge_control_element', '<i class="material-icons">pause</i>', (event) => {
+      this.controls.playPause = new _uiMenuItem2["default"](this.controlPanel, "ge_control_element", '<i class="material-icons">pause</i>', function (event) {
+        event.stopPropagation();
+        event.preventDefault();
+        if (glslcanvas.paused) {
+          glslcanvas.play();
+          // this.controls.playPause.name = '<i class="material-icons">pause</i>';//'Pause';
+          _this.controls.playPause.name = '<i class="material-icons">pause</i>'; //'Pause';
+        } else {
+            glslcanvas.pause();
+            _this.controls.playPause.name = '<i class="material-icons">play_arrow</i>'; //'Play';
+          }
+      });
+      // rec
+      this.isCapturing = false;
+      // let rec = new MenuItem(this.controlPanel, 'ge_control_element', '<i class="material-icons">fiber_manual_record</i>', (event) => {
+      var rec = new _uiMenuItem2["default"](this.controlPanel, "ge_control_element", '<i class="material-icons">&#xE061;</i>', function (event) {
+        event.stopPropagation();
+        event.preventDefault();
+        if (_this.isCapturing) {
+          _this.stopVideoCapture();
+        } else {
+          _this.startVideoCapture();
         }
-    }, {
-        key: 'onPresentationWindowClose',
-        value: function onPresentationWindowClose() {
-            this.el.appendChild(this.canvas.canvas);
-            this.setCanvasSize(this.originalSize.width, this.originalSize.height);
-            this.canvas.resize();
+      });
+      this.controls.rec = rec;
+      this.controls.rec.button.style.color = "red";
 
-            this.main.onClosePresentationWindow();
-            this.main.menu.onClosePresentationWindow();
-            this.presentationWindow = null;
+      // present mode (only if there is a presentation.html file to point to)
+      // this.controls.presentationMode = new MenuItem(this.controlPanel, 'ge_control_element', '<i class="material-icons">open_in_new</i>', (event) => {
+      this.controls.presentationMode = new _uiMenuItem2["default"](this.controlPanel, "ge_control_element", '<i class="material-icons">open_in_new</i>', function (event) {
+        event.stopPropagation();
+        event.preventDefault();
+        if (main.pWindowOpen) {
+          main.togglePresentationWindow(false);
+        } else {
+          main.togglePresentationWindow(true);
         }
-    }, {
-        key: 'onPresentationWindowResize',
-        value: function onPresentationWindowResize() {
-            if (this.presentationWindow) {
-                this.setCanvasSize(this.presentationWindow.innerWidth, this.presentationWindow.innerHeight);
-                this.canvas.resize();
-            }
-        }
-    }]);
+      });
 
-    return Shader;
+      this.elControl = this.el.getElementsByClassName(CONTROLS_CLASSNAME)[0];
+      this.elControl.addEventListener("mouseenter", function (event) {
+        _this.showControls();
+      });
+      this.elControl.addEventListener("mouseleave", function (event) {
+        _this.hideControls();
+      });
+      this.elCanvas.addEventListener("mousemove", function (event) {
+        if (event.offsetY > _this.elCanvas.clientHeight * 0.66) {
+          _this.showControls();
+        } else {
+          _this.hideControls();
+        }
+      });
+      this.hideControls();
+    }
+
+    // ========== EVENTS
+    // Draggable/resizable/snappable
+    if (main.options.canvas_draggable || main.options.canvas_resizable || main.options.canvas_snapable) {
+      (0, _toolsInteractiveDom.subscribeInteractiveDom)(this.el, {
+        move: main.options.canvas_draggable,
+        resize: main.options.canvas_resizable,
+        snap: main.options.canvas_snapable
+      });
+
+      if (main.options.canvas_size === "halfscreen") {
+        this.el.snapRight();
+      }
+
+      this.el.on("move", function (event) {
+        event.el.style.width = event.el.clientWidth + "px";
+        event.el.style.height = event.el.clientHeight + "px";
+      });
+      this.el.on("resize", function (event) {
+        glslcanvas.canvas.style.width = event.el.clientWidth + "px";
+        glslcanvas.canvas.style.height = event.el.clientHeight + "px";
+        glslcanvas.resize();
+      });
+    }
+
+    // If there is a menu offset the editor to come after it
+    if (main.menu) {
+      this.el.style.top = (main.menu.el.clientHeight || main.menu.el.offsetHeight || main.menu.el.scrollHeight) + "px";
+    }
+
+    // Add all this to the main container
+    main.container.appendChild(this.el);
+    glslcanvas.resize();
+  }
+
+  _createClass(Shader, [{
+    key: "hideControls",
+    value: function hideControls() {
+      if (this.elControl && this.elControl.className === CONTROLS_CLASSNAME) {
+        this.elControl.className = CONTROLS_CLASSNAME + " " + CONTROLS_CLASSNAME + "_hidden";
+      }
+    }
+  }, {
+    key: "showControls",
+    value: function showControls() {
+      if (this.elControl && this.elControl.className === CONTROLS_CLASSNAME + " " + CONTROLS_CLASSNAME + "_hidden") {
+        this.elControl.className = CONTROLS_CLASSNAME;
+      }
+    }
+  }, {
+    key: "requestRedraw",
+    value: function requestRedraw() {
+      this.canvas.forceRender = true;
+      this.canvas.render();
+    }
+  }, {
+    key: "screenshot",
+    value: function screenshot() {
+      this.requestRedraw();
+      return this.mediaCapture.screenshot();
+    }
+  }, {
+    key: "startVideoCapture",
+    value: function startVideoCapture() {
+      this.requestRedraw();
+      if (this.mediaCapture.startVideoCapture()) {
+        this.isCapturing = true;
+        this.controls.rec.button.style.color = "white";
+        // this.controls.rec.name = '<i class="material-icons">stop</i>';
+        this.controls.rec.name = '<i class="material-icons">&#xE061;</i>';
+      }
+    }
+  }, {
+    key: "stopVideoCapture",
+    value: function stopVideoCapture() {
+      if (this.isCapturing) {
+        this.isCapturing = false;
+        this.controls.rec.button.style.color = "red";
+        // this.controls.rec.name = '<i class="material-icons">fiber_manual_record</i>';
+        this.controls.rec.name = '<i class="material-icons">stop</i>';
+        this.mediaCapture.stopVideoCapture().then(function (video) {
+          (0, _toolsDownload.saveAs)(video.blob, Number(new Date()) + ".webm");
+        });
+      }
+    }
+  }, {
+    key: "openWindow",
+    value: function openWindow() {
+      this.originalSize = {
+        width: this.canvas.canvas.clientWidth,
+        height: this.canvas.canvas.clientHeight
+      };
+      this.presentationWindow = window.open("", "_blank", "presentationWindow");
+      this.setUpPresentationWindow();
+    }
+  }, {
+    key: "closeWindow",
+    value: function closeWindow() {
+      if (this.presentationWindow) {
+        this.presentationWindow.close();
+      }
+    }
+  }, {
+    key: "setCanvasSize",
+    value: function setCanvasSize(w, h) {
+      this.canvas.canvas.style.width = w + "px";
+      this.canvas.canvas.style.height = h + "px";
+    }
+  }, {
+    key: "setUpPresentationWindow",
+    value: function setUpPresentationWindow() {
+      this.presentationWindow.document.body.appendChild(this.canvas.canvas);
+      var d = this.presentationWindow.document;
+      var div = d.createElement("div");
+      div.appendChild(d.createTextNode("Projector mode"));
+      var span = this.presentationWindow.document.createElement("span");
+      div.appendChild(span);
+      span.appendChild(d.createTextNode(" - If the canvas doesn't update, drag this window and reveal the editor"));
+      d.body.appendChild(div);
+
+      d.title = "GLSL Editor";
+      d.body.style.padding = "0";
+      d.body.style.margin = "0";
+      d.body.style.background = "#171e22";
+      d.body.style.overflow = "hidden";
+
+      div.style.position = "absolute";
+      div.style.width = "100%";
+      div.style.background = "rgba(0, 0, 0, 0.5)";
+      div.style.position = "absolute";
+      div.style.top = "0";
+      div.style.left = "0";
+      div.style.right = "0";
+      div.style.padding = "16px";
+      div.style.color = "#ffffff";
+      div.style.fontSize = "14px";
+      div.style.fontFamily = "Helvetica, Geneva, sans-serif";
+      div.style.fontWeight = "400";
+      div.style.letterSpacing = "0.1em";
+      div.style.textAlign = "center";
+      div.style.opacity = "1";
+      div.style.zIndex = "9999";
+      div.style.setProperty("-webkit-transition", "opacity 1.5s");
+      div.style.setProperty("-moz-transition", "opacity 1.5s");
+      div.style.setProperty("transition", "opacity 1.5s");
+
+      span.style.color = "rgba(255, 255, 255, 0.5)";
+
+      setTimeout(function () {
+        div.style.opacity = 0;
+      }, 4000);
+
+      this.setCanvasSize(this.presentationWindow.innerWidth, this.presentationWindow.innerHeight);
+      this.presentationWindow.addEventListener("resize", this.onPresentationWindowResize.bind(this));
+      this.presentationWindow.addEventListener("unload", this.onPresentationWindowClose.bind(this));
+    }
+  }, {
+    key: "onPresentationWindowClose",
+    value: function onPresentationWindowClose() {
+      this.el.appendChild(this.canvas.canvas);
+      this.setCanvasSize(this.originalSize.width, this.originalSize.height);
+      this.canvas.resize();
+
+      this.main.onClosePresentationWindow();
+      this.main.menu.onClosePresentationWindow();
+      this.presentationWindow = null;
+    }
+  }, {
+    key: "onPresentationWindowResize",
+    value: function onPresentationWindowResize() {
+      if (this.presentationWindow) {
+        this.setCanvasSize(this.presentationWindow.innerWidth, this.presentationWindow.innerHeight);
+        this.canvas.resize();
+      }
+    }
+  }]);
+
+  return Shader;
 })();
 
-exports['default'] = Shader;
-module.exports = exports['default'];
+exports["default"] = Shader;
+module.exports = exports["default"];
 
-},{"../tools/interactiveDom":130,"../tools/mediaCapture":131,"../ui/MenuItem":138,"../vendor/FileSaver.min.js":152,"babel-runtime/helpers/class-call-check":10,"babel-runtime/helpers/create-class":11,"babel-runtime/helpers/interop-require-default":14,"glslCanvas":113}],123:[function(_dereq_,module,exports){
+},{"../tools/download":123,"../tools/interactiveDom":124,"../tools/mediaCapture":125,"../ui/MenuItem":132,"babel-runtime/helpers/class-call-check":10,"babel-runtime/helpers/create-class":11,"babel-runtime/helpers/interop-require-default":14,"glslCanvas":109}],117:[function(_dereq_,module,exports){
 // Import CodeMirror
 'use strict';
 
@@ -18299,7 +19044,9 @@ var BufferManager = (function () {
                 }
                 old.unlinkDoc(linked);
             }
-            this.main.editor.focus();
+            if (this.main.options.autofocus) {
+                this.main.editor.focus();
+            }
             this.main.setContent(this.main.getContent());
 
             if (this.tabs[this.current]) {
@@ -18353,7 +19100,7 @@ var BufferManager = (function () {
 exports['default'] = BufferManager;
 module.exports = exports['default'];
 
-},{"babel-runtime/core-js/object/keys":6,"babel-runtime/helpers/class-call-check":10,"babel-runtime/helpers/create-class":11,"babel-runtime/helpers/interop-require-default":14,"codemirror":30,"codemirror/mode/clike/clike.js":31}],124:[function(_dereq_,module,exports){
+},{"babel-runtime/core-js/object/keys":6,"babel-runtime/helpers/class-call-check":10,"babel-runtime/helpers/create-class":11,"babel-runtime/helpers/interop-require-default":14,"codemirror":30,"codemirror/mode/clike/clike.js":31}],118:[function(_dereq_,module,exports){
 /*
 Original: https://github.com/tangrams/tangram-play/blob/gh-pages/src/js/addons/ui/FileDrop.js
 Author: Lou Huang (@saikofish)
@@ -18406,7 +19153,7 @@ var FileDrop = function FileDrop(main) {
 exports['default'] = FileDrop;
 module.exports = exports['default'];
 
-},{"babel-runtime/helpers/class-call-check":10}],125:[function(_dereq_,module,exports){
+},{"babel-runtime/helpers/class-call-check":10}],119:[function(_dereq_,module,exports){
 'use strict';
 
 var _createClass = _dereq_('babel-runtime/helpers/create-class')['default'];
@@ -18499,7 +19246,7 @@ function parseQuery(qstr) {
 }
 module.exports = exports['default'];
 
-},{"babel-runtime/helpers/class-call-check":10,"babel-runtime/helpers/create-class":11}],126:[function(_dereq_,module,exports){
+},{"babel-runtime/helpers/class-call-check":10,"babel-runtime/helpers/create-class":11}],120:[function(_dereq_,module,exports){
 /*
 Original: https://github.com/tangrams/tangram-play/blob/gh-pages/src/js/addons/LocalStorage.js
 Author: Lou Huang (@saikofish)
@@ -18600,128 +19347,15 @@ var LocalStorage = {
 exports['default'] = LocalStorage;
 module.exports = exports['default'];
 
-},{}],127:[function(_dereq_,module,exports){
+},{}],121:[function(_dereq_,module,exports){
 'use strict';
 
 Object.defineProperty(exports, '__esModule', {
     value: true
 });
-exports.saveOnServer = saveOnServer;
-exports.createOpenFrameArtwork = createOpenFrameArtwork;
-var lastReplay;
-
-function saveOnServer(ge, callback) {
-    if (!ge.change && lastReplay) {
-        callback(lastReplay);
-        return;
-    }
-
-    var content = ge.getContent();
-    var name = ge.getAuthor();
-    var title = ge.getTitle();
-
-    if (name !== '' && title !== '') {
-        name += '-' + title;
-    }
-
-    // STORE A COPY on SERVER
-    var url = 'https://thebookofshaders.com:8080/';
-    // let url = 'http://localhost:8080/';
-    var data = new FormData();
-    data.append('code', content);
-
-    var dataURL = ge.shader.elCanvas.toDataURL('image/png');
-    var blobBin = atob(dataURL.split(',')[1]);
-    var array = [];
-    for (var i = 0; i < blobBin.length; i++) {
-        array.push(blobBin.charCodeAt(i));
-    }
-    var file = new Blob([new Uint8Array(array)], { type: 'image/png' });
-    data.append('image', file);
-
-    var xhr = new XMLHttpRequest();
-    xhr.open('POST', url + 'save', true);
-    xhr.onload = function (event) {
-        if (typeof callback === 'function') {
-            var _name = xhr.responseText;
-            var replay = {
-                content: content,
-                name: _name,
-                url: url
-            };
-            callback(replay);
-            lastReplay = replay;
-        }
-    };
-    xhr.send(data);
-}
-
-function createOpenFrameArtwork(glslEditor, name, url, callback) {
-    var OF_BASE_API_URL = 'https://api.openframe.io/v0';
-    var OF_BASE_APP_URL = 'https://openframe.io';
-    // const OF_BASE_API_URL = 'http://localhost:8888/api'; // for local testing
-    // const OF_BASE_APP_URL = 'http://localhost:8000'; // for local testing
-    var title = glslEditor.getTitle();
-    var author = glslEditor.getAuthor();
-    glslEditor.getOfToken().then(initiateOfRequest);
-
-    function initiateOfRequest(ofToken) {
-        var xhr = new XMLHttpRequest();
-        if (typeof callback === 'undefined') {
-            callback = function () {};
-        }
-        // anywhere in the API that user {id} is needed, the alias 'current' can be used for the logged-in user
-        xhr.open('POST', OF_BASE_API_URL + '/users/current/created_artwork');
-        // set content type to JSON...
-        xhr.setRequestHeader('Content-Type', 'application/json;charset=UTF-8');
-        xhr.setRequestHeader('Authorization', ofToken);
-        xhr.setRequestHeader('access_token', ofToken);
-
-        // This is essential in order to include auth cookies:
-        xhr.onload = function (event) {
-            console.log('onload', event);
-            if (event.currentTarget.status >= 400) {
-                (function () {
-                    window.open(OF_BASE_APP_URL + '/login', 'login', 'width=500,height=600');
-                    var successListener = function successListener(e) {
-                        if (e.data === 'success') {
-                            createOpenFrameArtwork(glslEditor, name, url, callback);
-                        }
-                        window.removeEventListener('message', successListener);
-                    };
-                    window.addEventListener('message', successListener, false);
-                })();
-            } else if (event.currentTarget.status === 200) {
-                callback(true);
-            } else {
-                callback(false);
-            }
-        };
-        xhr.onerror = function (event) {
-            console.log('Status:', event.currentTarget.status);
-        };
-        /* Remote expects underscore keys */
-        /* eslint-disable camelcase */
-        xhr.send(JSON.stringify({
-            title: title,
-            author_name: author,
-            is_public: false,
-            format: 'openframe-glslviewer',
-            url: 'https://thebookofshaders.com/log/' + name + '.frag',
-            thumb_url: 'https://thebookofshaders.com/log/' + name + '.png'
-            /* eslint-enable camelcase */
-        }));
-    }
-}
-
-},{}],128:[function(_dereq_,module,exports){
-"use strict";
-
-Object.defineProperty(exports, "__esModule", {
-    value: true
-});
 exports.getDomOrigin = getDomOrigin;
 exports.getDevicePixelRatio = getDevicePixelRatio;
+exports.getJSON = getJSON;
 
 function getDomOrigin(el) {
     var box = el.getBoundingClientRect ? el.getBoundingClientRect() : { top: 0, left: 0 };
@@ -18744,7 +19378,24 @@ function getDevicePixelRatio(ctx) {
     return devicePixelRatio / backingStoreRatio;
 }
 
-},{}],129:[function(_dereq_,module,exports){
+function getJSON(url, callback) {
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', url, true);
+    xhr.responseType = 'json';
+    xhr.onload = function () {
+        var status = xhr.status;
+        if (status === 200) {
+            callback(null, xhr.response);
+        } else {
+            callback(status, xhr.response);
+        }
+    };
+    xhr.send();
+}
+
+;
+
+},{}],122:[function(_dereq_,module,exports){
 'use strict';
 
 Object.defineProperty(exports, '__esModule', {
@@ -18886,7 +19537,23 @@ function getHits(testResults) {
     return total;
 }
 
-},{}],130:[function(_dereq_,module,exports){
+},{}],123:[function(_dereq_,module,exports){
+"use strict";
+
+Object.defineProperty(exports, "__esModule", {
+    value: true
+});
+exports.saveAs = saveAs;
+
+function saveAs(blob, filename) {
+    var url = URL.createObjectURL(blob);
+    var link = document.createElement("a");
+    link.setAttribute("download", filename);
+    link.setAttribute("href", url);
+    link.click();
+}
+
+},{}],124:[function(_dereq_,module,exports){
 /*
  * Original code from: https://twitter.com/blurspline / https://github.com/zz85
  * See post @ http://www.lab4games.net/zz85/blog/2014/11/15/resizing-moving-snapping-windows-with-js-css/
@@ -18945,13 +19612,13 @@ function subscribeInteractiveDom(dom, options) {
 
     // Mouse events
     dom.addEventListener('mousedown', onMouseDown);
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
 
     // Touch events
-    dom.addEventListener('touchstart', onTouchDown);
-    document.addEventListener('touchmove', onTouchMove);
-    document.addEventListener('touchend', onTouchEnd);
+    dom.addEventListener('touchstart', onTouchDown, { passive: false });
+    document.addEventListener('touchmove', onTouchMove, { passive: false });
+    document.addEventListener('touchend', onTouchEnd, { passive: false });
 
     function hintHide() {
         setBounds(ghostdom, b.left, b.top, b.width, b.height);
@@ -18959,25 +19626,45 @@ function subscribeInteractiveDom(dom, options) {
     }
 
     function onTouchDown(event) {
-        onDown(event.touches[0]);
-        e.preventDefault();
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.touches.length === 1) {
+            onDown(event.changedTouches[0]);
+        }
     }
 
     function onTouchMove(event) {
         event.preventDefault();
         event.stopPropagation();
-        onMove(event.touches[0]);
+        if (event.touches.length === 1) {
+            onMove(event.changedTouches[0]);
+        }
     }
 
     function onTouchEnd(event) {
+        event.preventDefault();
+        event.stopPropagation();
         if (event.touches.length === 0) {
-            onUp(e.changedTouches[0]);
+            onUp(event.changedTouches[0]);
         }
     }
 
     function onMouseDown(event) {
+        event.preventDefault();
+        event.stopPropagation();
         onDown(event);
-        e.preventDefault();
+    }
+
+    function onMouseMove(event) {
+        event.preventDefault();
+        event.stopPropagation();
+        onMove(event);
+    }
+
+    function onMouseUp(event) {
+        event.preventDefault();
+        event.stopPropagation();
+        onUp(event);
     }
 
     function onDown(event) {
@@ -19192,7 +19879,7 @@ function subscribeInteractiveDom(dom, options) {
     return dom;
 }
 
-},{"./mixin":132}],131:[function(_dereq_,module,exports){
+},{"./mixin":126}],125:[function(_dereq_,module,exports){
 /* global MediaRecorder
 Author: Brett Camper (@professorlemeza)
 URL: https://github.com/tangrams/tangram/blob/master/src/utils/media_capture.js
@@ -19353,7 +20040,7 @@ var MediaCapture = (function () {
 exports['default'] = MediaCapture;
 module.exports = exports['default'];
 
-},{"./urls":133,"babel-runtime/core-js/promise":8,"babel-runtime/helpers/class-call-check":10,"babel-runtime/helpers/create-class":11}],132:[function(_dereq_,module,exports){
+},{"./urls":127,"babel-runtime/core-js/promise":8,"babel-runtime/helpers/class-call-check":10,"babel-runtime/helpers/create-class":11}],126:[function(_dereq_,module,exports){
 /*
 Add events to a class or object:
     class MyClass {
@@ -19529,7 +20216,7 @@ function subscribeMixin(target) {
     });
 }
 
-},{"babel-runtime/core-js/get-iterator":1,"babel-runtime/core-js/object/assign":2,"babel-runtime/core-js/object/keys":6,"babel-runtime/core-js/set":9}],133:[function(_dereq_,module,exports){
+},{"babel-runtime/core-js/get-iterator":1,"babel-runtime/core-js/object/assign":2,"babel-runtime/core-js/object/keys":6,"babel-runtime/core-js/set":9}],127:[function(_dereq_,module,exports){
 'use strict';
 
 Object.defineProperty(exports, '__esModule', {
@@ -19554,7 +20241,7 @@ function createObjectURL(url) {
     }
 }
 
-},{}],134:[function(_dereq_,module,exports){
+},{}],128:[function(_dereq_,module,exports){
 'use strict';
 
 var _createClass = _dereq_('babel-runtime/helpers/create-class')['default'];
@@ -19607,7 +20294,10 @@ var ErrorsDisplay = (function () {
             var re = /ERROR:\s+\d+:(\d+):\s+('.*)/g;
             var matches = re.exec(args.error);
             if (matches) {
-                var line = parseInt(matches[1]) - 1;
+                var numLines = 0;
+                if (this.main.options.frag_header.length > 0) numLines += (this.main.options.frag_header.match(/\r?\n/g) || '').length;
+
+                var line = parseInt(matches[1]) - numLines;
                 var er = matches[2];
                 var msg = document.createElement('div');
 
@@ -19627,7 +20317,7 @@ var ErrorsDisplay = (function () {
 exports['default'] = ErrorsDisplay;
 module.exports = exports['default'];
 
-},{"babel-runtime/helpers/class-call-check":10,"babel-runtime/helpers/create-class":11}],135:[function(_dereq_,module,exports){
+},{"babel-runtime/helpers/class-call-check":10,"babel-runtime/helpers/create-class":11}],129:[function(_dereq_,module,exports){
 'use strict';
 
 var _classCallCheck = _dereq_('babel-runtime/helpers/class-call-check')['default'];
@@ -19666,7 +20356,7 @@ var ExportIcon = function ExportIcon(main) {
 exports['default'] = ExportIcon;
 module.exports = exports['default'];
 
-},{"./modals/ExportModal":140,"babel-runtime/helpers/class-call-check":10,"babel-runtime/helpers/interop-require-default":14}],136:[function(_dereq_,module,exports){
+},{"./modals/ExportModal":134,"babel-runtime/helpers/class-call-check":10,"babel-runtime/helpers/interop-require-default":14}],130:[function(_dereq_,module,exports){
 'use strict';
 
 var _createClass = _dereq_('babel-runtime/helpers/create-class')['default'];
@@ -19908,7 +20598,7 @@ var Helpers = (function () {
 exports['default'] = Helpers;
 module.exports = exports['default'];
 
-},{"./modals/Modal":141,"./pickers/ColorPicker":142,"./pickers/FloatPicker":143,"./pickers/Vec2Picker":145,"./pickers/Vec3Picker":146,"./pickers/types/Color":147,"babel-runtime/helpers/class-call-check":10,"babel-runtime/helpers/create-class":11,"babel-runtime/helpers/interop-require-default":14}],137:[function(_dereq_,module,exports){
+},{"./modals/Modal":135,"./pickers/ColorPicker":136,"./pickers/FloatPicker":137,"./pickers/Vec2Picker":139,"./pickers/Vec3Picker":140,"./pickers/types/Color":141,"babel-runtime/helpers/class-call-check":10,"babel-runtime/helpers/create-class":11,"babel-runtime/helpers/interop-require-default":14}],131:[function(_dereq_,module,exports){
 'use strict';
 
 var _classCallCheck = _dereq_('babel-runtime/helpers/class-call-check')['default'];
@@ -19993,7 +20683,7 @@ var Menu = function Menu(main) {
 exports['default'] = Menu;
 module.exports = exports['default'];
 
-},{"./MenuItem":138,"./modals/ExportModal":140,"babel-runtime/helpers/class-call-check":10,"babel-runtime/helpers/interop-require-default":14}],138:[function(_dereq_,module,exports){
+},{"./MenuItem":132,"./modals/ExportModal":134,"babel-runtime/helpers/class-call-check":10,"babel-runtime/helpers/interop-require-default":14}],132:[function(_dereq_,module,exports){
 'use strict';
 
 var _createClass = _dereq_('babel-runtime/helpers/create-class')['default'];
@@ -20048,7 +20738,7 @@ var MenuItem = (function () {
 exports['default'] = MenuItem;
 module.exports = exports['default'];
 
-},{"babel-runtime/helpers/class-call-check":10,"babel-runtime/helpers/create-class":11}],139:[function(_dereq_,module,exports){
+},{"babel-runtime/helpers/class-call-check":10,"babel-runtime/helpers/create-class":11}],133:[function(_dereq_,module,exports){
 'use strict';
 
 var _createClass = _dereq_('babel-runtime/helpers/create-class')['default'];
@@ -20321,7 +21011,7 @@ function searchOverlay(query, caseInsensitive) {
 }
 module.exports = exports['default'];
 
-},{"../core/Editor.js":121,"../tools/debugging":129,"babel-runtime/helpers/class-call-check":10,"babel-runtime/helpers/create-class":11}],140:[function(_dereq_,module,exports){
+},{"../core/Editor.js":115,"../tools/debugging":122,"babel-runtime/helpers/class-call-check":10,"babel-runtime/helpers/create-class":11}],134:[function(_dereq_,module,exports){
 'use strict';
 
 var _get = _dereq_('babel-runtime/helpers/get')['default'];
@@ -20344,14 +21034,12 @@ var _Modal2 = _dereq_('./Modal');
 
 var _Modal3 = _interopRequireDefault(_Modal2);
 
-var _ioShare = _dereq_('../../io/share');
+// import { saveOnServer, createOpenFrameArtwork } from '../../io/share';
 
 var ExportModal = (function (_Modal) {
     _inherits(ExportModal, _Modal);
 
     function ExportModal(CSS_PREFIX, properties) {
-        var _this = this;
-
         _classCallCheck(this, ExportModal);
 
         _get(Object.getPrototypeOf(ExportModal.prototype), 'constructor', this).call(this, CSS_PREFIX, properties);
@@ -20361,36 +21049,37 @@ var ExportModal = (function (_Modal) {
             properties.main.download();
         });
 
-        this.codeURL = new _MenuItem2['default'](this.el, 'ge_sub_menu', 'Code URL...', function (event) {
-            (0, _ioShare.saveOnServer)(_this.main, function (event) {
-                prompt('Use this url to share your code', 'http://thebookofshaders.com/edit.php?log=' + event.name);
-                _this.removeModal();
-            });
-        });
+        // this.codeURL = new MenuItem(this.el, 'ge_sub_menu', 'Code URL...', (event) => {
+        //     saveOnServer(this.main, (event) => {
+        //         prompt('Use this url to share your code', 'http://thebookofshaders.com/edit.php?log=' + event.name);
+        //         this.removeModal();
+        //     });
+        // });
 
-        this.shaderURL = new _MenuItem2['default'](this.el, 'ge_sub_menu', 'Artwork URL...', function (event) {
-            (0, _ioShare.saveOnServer)(_this.main, function (event) {
-                prompt('Use this url to share your artwork', 'http://player.thebookofshaders.com/?log=' + event.name);
-                _this.removeModal();
-            });
-        });
+        // this.shaderURL = new MenuItem(this.el, 'ge_sub_menu', 'Artwork URL...', (event) => {
+        //     saveOnServer(this.main, (event) => {
+        //         prompt('Use this url to share your artwork', 'http://player.thebookofshaders.com/?log=' + event.name);
+        //         this.removeModal();
+        //     });
+        // });
 
-        var shareOF = new _MenuItem2['default'](this.el, 'ge_sub_menu', 'Artwork to [o]', function (event) {
-            shareOF.el.innerHTML = 'Artwork to [o]: adding to collection';
-            (0, _ioShare.saveOnServer)(_this.main, function (event) {
-                (0, _ioShare.createOpenFrameArtwork)(_this.main, event.name, event.url, function (success) {
-                    if (success) {
-                        shareOF.el.innerHTML = 'Artwork to [o]: added!';
-                    } else {
-                        shareOF.el.innerHTML = 'Artwork to [o]: failed :(';
-                    }
-                    setTimeout(function () {
-                        shareOF.el.innerHTML = '[o]';
-                        _this.removeModal();
-                    }, 4000);
-                });
-            });
-        });
+        // let shareOF = new MenuItem(this.el, 'ge_sub_menu', 'Artwork to [o]', (event) => {
+        //     shareOF.el.innerHTML = 'Artwork to [o]: adding to collection';
+        //     saveOnServer(this.main, (event) => {
+        //         createOpenFrameArtwork(this.main, event.name, event.url, (success) => {
+        //             if (success) {
+        //                 shareOF.el.innerHTML = 'Artwork to [o]: added!';
+        //             }
+        //             else {
+        //                 shareOF.el.innerHTML = 'Artwork to [o]: failed :(';
+        //             }
+        //             setTimeout(() => {
+        //                 shareOF.el.innerHTML = '[o]';
+        //                 this.removeModal();
+        //             }, 4000);
+        //         });
+        //     });
+        // });
     }
 
     return ExportModal;
@@ -20399,7 +21088,7 @@ var ExportModal = (function (_Modal) {
 exports['default'] = ExportModal;
 module.exports = exports['default'];
 
-},{"../../io/share":127,"../MenuItem":138,"./Modal":141,"babel-runtime/helpers/class-call-check":10,"babel-runtime/helpers/get":12,"babel-runtime/helpers/inherits":13,"babel-runtime/helpers/interop-require-default":14}],141:[function(_dereq_,module,exports){
+},{"../MenuItem":132,"./Modal":135,"babel-runtime/helpers/class-call-check":10,"babel-runtime/helpers/get":12,"babel-runtime/helpers/inherits":13,"babel-runtime/helpers/interop-require-default":14}],135:[function(_dereq_,module,exports){
 'use strict';
 
 var _createClass = _dereq_('babel-runtime/helpers/create-class')['default'];
@@ -20557,7 +21246,7 @@ function removeEvent(element, event, callback) {
     element.removeEventListener(event, callback, false);
 }
 
-},{"../../tools/mixin":132,"babel-runtime/helpers/class-call-check":10,"babel-runtime/helpers/create-class":11}],142:[function(_dereq_,module,exports){
+},{"../../tools/mixin":126,"babel-runtime/helpers/class-call-check":10,"babel-runtime/helpers/create-class":11}],136:[function(_dereq_,module,exports){
 /*
 Original: https://github.com/tangrams/tangram-play/blob/gh-pages/src/js/addons/ui/widgets/ColorPickerModal.js
 Author: Lou Huang (@saikofish)
@@ -20928,7 +21617,7 @@ function drawCircle(ctx, coords, radius, color, width) {
 }
 module.exports = exports['default'];
 
-},{"../../tools/common":128,"../../tools/interactiveDom":130,"./Picker":144,"./types/Color":147,"babel-runtime/helpers/class-call-check":10,"babel-runtime/helpers/create-class":11,"babel-runtime/helpers/get":12,"babel-runtime/helpers/inherits":13,"babel-runtime/helpers/interop-require-default":14}],143:[function(_dereq_,module,exports){
+},{"../../tools/common":121,"../../tools/interactiveDom":124,"./Picker":138,"./types/Color":141,"babel-runtime/helpers/class-call-check":10,"babel-runtime/helpers/create-class":11,"babel-runtime/helpers/get":12,"babel-runtime/helpers/inherits":13,"babel-runtime/helpers/interop-require-default":14}],137:[function(_dereq_,module,exports){
 'use strict';
 
 var _get = _dereq_('babel-runtime/helpers/get')['default'];
@@ -21080,7 +21769,7 @@ var FloatPicker = (function (_Picker) {
 exports['default'] = FloatPicker;
 module.exports = exports['default'];
 
-},{"./Picker":144,"./types/Float":149,"babel-runtime/helpers/class-call-check":10,"babel-runtime/helpers/create-class":11,"babel-runtime/helpers/get":12,"babel-runtime/helpers/inherits":13,"babel-runtime/helpers/interop-require-default":14}],144:[function(_dereq_,module,exports){
+},{"./Picker":138,"./types/Float":143,"babel-runtime/helpers/class-call-check":10,"babel-runtime/helpers/create-class":11,"babel-runtime/helpers/get":12,"babel-runtime/helpers/inherits":13,"babel-runtime/helpers/interop-require-default":14}],138:[function(_dereq_,module,exports){
 /*
 Original: https://github.com/tangrams/tangram-play/blob/gh-pages/src/js/addons/ui/widgets/ColorPickerModal.js
 Author: Lou Huang (@saikofish)
@@ -21332,7 +22021,7 @@ function removeEvent(element, event, callback) {
     element.removeEventListener(event, callback, false);
 }
 
-},{"../../tools/common":128,"../../tools/mixin":132,"babel-runtime/helpers/class-call-check":10,"babel-runtime/helpers/create-class":11}],145:[function(_dereq_,module,exports){
+},{"../../tools/common":121,"../../tools/mixin":126,"babel-runtime/helpers/class-call-check":10,"babel-runtime/helpers/create-class":11}],139:[function(_dereq_,module,exports){
 'use strict';
 
 var _get = _dereq_('babel-runtime/helpers/get')['default'];
@@ -21482,7 +22171,7 @@ var Vec2Picker = (function (_Picker) {
 exports['default'] = Vec2Picker;
 module.exports = exports['default'];
 
-},{"./Picker":144,"./types/Vector":151,"babel-runtime/helpers/class-call-check":10,"babel-runtime/helpers/create-class":11,"babel-runtime/helpers/get":12,"babel-runtime/helpers/inherits":13,"babel-runtime/helpers/interop-require-default":14}],146:[function(_dereq_,module,exports){
+},{"./Picker":138,"./types/Vector":145,"babel-runtime/helpers/class-call-check":10,"babel-runtime/helpers/create-class":11,"babel-runtime/helpers/get":12,"babel-runtime/helpers/inherits":13,"babel-runtime/helpers/interop-require-default":14}],140:[function(_dereq_,module,exports){
 'use strict';
 
 var _get = _dereq_('babel-runtime/helpers/get')['default'];
@@ -21731,7 +22420,7 @@ var Vec3Picker = (function (_Picker) {
 exports['default'] = Vec3Picker;
 module.exports = exports['default'];
 
-},{"./Picker":144,"./types/Matrix":150,"./types/Vector":151,"babel-runtime/helpers/class-call-check":10,"babel-runtime/helpers/create-class":11,"babel-runtime/helpers/get":12,"babel-runtime/helpers/inherits":13,"babel-runtime/helpers/interop-require-default":14}],147:[function(_dereq_,module,exports){
+},{"./Picker":138,"./types/Matrix":144,"./types/Vector":145,"babel-runtime/helpers/class-call-check":10,"babel-runtime/helpers/create-class":11,"babel-runtime/helpers/get":12,"babel-runtime/helpers/inherits":13,"babel-runtime/helpers/interop-require-default":14}],141:[function(_dereq_,module,exports){
 'use strict';
 
 var _createClass = _dereq_('babel-runtime/helpers/create-class')['default'];
@@ -21906,7 +22595,7 @@ var Color = (function () {
 exports['default'] = Color;
 module.exports = exports['default'];
 
-},{"./ColorConverter":148,"babel-runtime/helpers/class-call-check":10,"babel-runtime/helpers/create-class":11,"babel-runtime/helpers/interop-require-default":14}],148:[function(_dereq_,module,exports){
+},{"./ColorConverter":142,"babel-runtime/helpers/class-call-check":10,"babel-runtime/helpers/create-class":11,"babel-runtime/helpers/interop-require-default":14}],142:[function(_dereq_,module,exports){
 'use strict';
 
 var _createClass = _dereq_('babel-runtime/helpers/create-class')['default'];
@@ -22341,7 +23030,7 @@ function getValueRanges(type) {
     }
 }
 
-},{"babel-runtime/helpers/class-call-check":10,"babel-runtime/helpers/create-class":11}],149:[function(_dereq_,module,exports){
+},{"babel-runtime/helpers/class-call-check":10,"babel-runtime/helpers/create-class":11}],143:[function(_dereq_,module,exports){
 'use strict';
 
 var _createClass = _dereq_('babel-runtime/helpers/create-class')['default'];
@@ -22387,7 +23076,7 @@ var Float = (function () {
 exports['default'] = Float;
 module.exports = exports['default'];
 
-},{"babel-runtime/helpers/class-call-check":10,"babel-runtime/helpers/create-class":11}],150:[function(_dereq_,module,exports){
+},{"babel-runtime/helpers/class-call-check":10,"babel-runtime/helpers/create-class":11}],144:[function(_dereq_,module,exports){
 'use strict';
 
 var _createClass = _dereq_('babel-runtime/helpers/create-class')['default'];
@@ -22501,7 +23190,7 @@ var Matrix = (function () {
 exports['default'] = Matrix;
 module.exports = exports['default'];
 
-},{"./Vector":151,"babel-runtime/helpers/class-call-check":10,"babel-runtime/helpers/create-class":11,"babel-runtime/helpers/interop-require-default":14}],151:[function(_dereq_,module,exports){
+},{"./Vector":145,"babel-runtime/helpers/class-call-check":10,"babel-runtime/helpers/create-class":11,"babel-runtime/helpers/interop-require-default":14}],145:[function(_dereq_,module,exports){
 'use strict';
 
 var _createClass = _dereq_('babel-runtime/helpers/create-class')['default'];
@@ -22764,160 +23453,6 @@ var Vector = (function () {
 exports['default'] = Vector;
 module.exports = exports['default'];
 
-},{"babel-runtime/helpers/class-call-check":10,"babel-runtime/helpers/create-class":11}],152:[function(_dereq_,module,exports){
-/*! @source http://purl.eligrey.com/github/FileSaver.js/blob/master/FileSaver.js */
-"use strict";
-
-var saveAs = saveAs || (function (view) {
-  "use strict";if (typeof navigator !== "undefined" && /MSIE [1-9]\./.test(navigator.userAgent)) {
-    return;
-  }var doc = view.document,
-      get_URL = function get_URL() {
-    return view.URL || view.webkitURL || view;
-  },
-      save_link = doc.createElementNS("http://www.w3.org/1999/xhtml", "a"),
-      can_use_save_link = ("download" in save_link),
-      click = function click(node) {
-    var event = new MouseEvent("click");node.dispatchEvent(event);
-  },
-      is_safari = /Version\/[\d\.]+.*Safari/.test(navigator.userAgent),
-      webkit_req_fs = view.webkitRequestFileSystem,
-      req_fs = view.requestFileSystem || webkit_req_fs || view.mozRequestFileSystem,
-      throw_outside = function throw_outside(ex) {
-    (view.setImmediate || view.setTimeout)(function () {
-      throw ex;
-    }, 0);
-  },
-      force_saveable_type = "application/octet-stream",
-      fs_min_size = 0,
-      arbitrary_revoke_timeout = 500,
-      revoke = function revoke(file) {
-    var revoker = function revoker() {
-      if (typeof file === "string") {
-        get_URL().revokeObjectURL(file);
-      } else {
-        file.remove();
-      }
-    };if (view.chrome) {
-      revoker();
-    } else {
-      setTimeout(revoker, arbitrary_revoke_timeout);
-    }
-  },
-      dispatch = function dispatch(filesaver, event_types, event) {
-    event_types = [].concat(event_types);var i = event_types.length;while (i--) {
-      var listener = filesaver["on" + event_types[i]];if (typeof listener === "function") {
-        try {
-          listener.call(filesaver, event || filesaver);
-        } catch (ex) {
-          throw_outside(ex);
-        }
-      }
-    }
-  },
-      auto_bom = function auto_bom(blob) {
-    if (/^\s*(?:text\/\S*|application\/xml|\S*\/\S*\+xml)\s*;.*charset\s*=\s*utf-8/i.test(blob.type)) {
-      return new Blob(["﻿", blob], { type: blob.type });
-    }return blob;
-  },
-      FileSaver = function FileSaver(blob, name, no_auto_bom) {
-    if (!no_auto_bom) {
-      blob = auto_bom(blob);
-    }var filesaver = this,
-        type = blob.type,
-        blob_changed = false,
-        object_url,
-        target_view,
-        dispatch_all = function dispatch_all() {
-      dispatch(filesaver, "writestart progress write writeend".split(" "));
-    },
-        fs_error = function fs_error() {
-      if (target_view && is_safari && typeof FileReader !== "undefined") {
-        var reader = new FileReader();reader.onloadend = function () {
-          var base64Data = reader.result;target_view.location.href = "data:attachment/file" + base64Data.slice(base64Data.search(/[,;]/));filesaver.readyState = filesaver.DONE;dispatch_all();
-        };reader.readAsDataURL(blob);filesaver.readyState = filesaver.INIT;return;
-      }if (blob_changed || !object_url) {
-        object_url = get_URL().createObjectURL(blob);
-      }if (target_view) {
-        target_view.location.href = object_url;
-      } else {
-        var new_tab = view.open(object_url, "_blank");if (new_tab == undefined && is_safari) {
-          view.location.href = object_url;
-        }
-      }filesaver.readyState = filesaver.DONE;dispatch_all();revoke(object_url);
-    },
-        abortable = function abortable(func) {
-      return function () {
-        if (filesaver.readyState !== filesaver.DONE) {
-          return func.apply(this, arguments);
-        }
-      };
-    },
-        create_if_not_found = { create: true, exclusive: false },
-        slice;filesaver.readyState = filesaver.INIT;if (!name) {
-      name = "download";
-    }if (can_use_save_link) {
-      object_url = get_URL().createObjectURL(blob);setTimeout(function () {
-        save_link.href = object_url;save_link.download = name;click(save_link);dispatch_all();revoke(object_url);filesaver.readyState = filesaver.DONE;
-      });return;
-    }if (view.chrome && type && type !== force_saveable_type) {
-      slice = blob.slice || blob.webkitSlice;blob = slice.call(blob, 0, blob.size, force_saveable_type);blob_changed = true;
-    }if (webkit_req_fs && name !== "download") {
-      name += ".download";
-    }if (type === force_saveable_type || webkit_req_fs) {
-      target_view = view;
-    }if (!req_fs) {
-      fs_error();return;
-    }fs_min_size += blob.size;req_fs(view.TEMPORARY, fs_min_size, abortable(function (fs) {
-      fs.root.getDirectory("saved", create_if_not_found, abortable(function (dir) {
-        var save = function save() {
-          dir.getFile(name, create_if_not_found, abortable(function (file) {
-            file.createWriter(abortable(function (writer) {
-              writer.onwriteend = function (event) {
-                target_view.location.href = file.toURL();filesaver.readyState = filesaver.DONE;dispatch(filesaver, "writeend", event);revoke(file);
-              };writer.onerror = function () {
-                var error = writer.error;if (error.code !== error.ABORT_ERR) {
-                  fs_error();
-                }
-              };"writestart progress write abort".split(" ").forEach(function (event) {
-                writer["on" + event] = filesaver["on" + event];
-              });writer.write(blob);filesaver.abort = function () {
-                writer.abort();filesaver.readyState = filesaver.DONE;
-              };filesaver.readyState = filesaver.WRITING;
-            }), fs_error);
-          }), fs_error);
-        };dir.getFile(name, { create: false }, abortable(function (file) {
-          file.remove();save();
-        }), abortable(function (ex) {
-          if (ex.code === ex.NOT_FOUND_ERR) {
-            save();
-          } else {
-            fs_error();
-          }
-        }));
-      }), fs_error);
-    }), fs_error);
-  },
-      FS_proto = FileSaver.prototype,
-      saveAs = function saveAs(blob, name, no_auto_bom) {
-    return new FileSaver(blob, name, no_auto_bom);
-  };if (typeof navigator !== "undefined" && navigator.msSaveOrOpenBlob) {
-    return function (blob, name, no_auto_bom) {
-      if (!no_auto_bom) {
-        blob = auto_bom(blob);
-      }return navigator.msSaveOrOpenBlob(blob, name || "download");
-    };
-  }FS_proto.abort = function () {
-    var filesaver = this;filesaver.readyState = filesaver.DONE;dispatch(filesaver, "abort");
-  };FS_proto.readyState = FS_proto.INIT = 0;FS_proto.WRITING = 1;FS_proto.DONE = 2;FS_proto.error = FS_proto.onwritestart = FS_proto.onprogress = FS_proto.onwrite = FS_proto.onabort = FS_proto.onerror = FS_proto.onwriteend = null;return saveAs;
-})(typeof self !== "undefined" && self || typeof window !== "undefined" && window || undefined.content);if (typeof module !== "undefined" && module.exports) {
-  module.exports.saveAs = saveAs;
-} else if (typeof define !== "undefined" && define !== null && define.amd != null) {
-  define([], function () {
-    return saveAs;
-  });
-}
-
-},{}]},{},[120])(120)
+},{"babel-runtime/helpers/class-call-check":10,"babel-runtime/helpers/create-class":11}]},{},[114])(114)
 });
 
